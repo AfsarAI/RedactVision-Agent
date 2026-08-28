@@ -1,0 +1,21 @@
+{
+  "name": "extension",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && npm run build:content && npm run build:background",
+    "build:content": "esbuild src/content/content.ts --bundle --format=iife --outfile=dist/content/content.js",
+    "build:background": "esbuild src/background/service-worker.ts --bundle --format=esm --outfile=dist/background/service-worker.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/chrome": "^0.2.7",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

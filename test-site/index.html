@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>RedactVision Agent - Test Page</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, sans-serif;
+      background: #f4f6f8;
+      color: #1f2937;
+    }
+
+    .container {
+      width: min(700px, 92%);
+      margin: 50px auto;
+      background: white;
+      padding: 32px;
+      border-radius: 12px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+    }
+
+    h1 {
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: #6b7280;
+      margin-bottom: 28px;
+    }
+
+    .form-group {
+      margin-bottom: 18px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 7px;
+      font-weight: 600;
+    }
+
+    input,
+    textarea,
+    select {
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 7px;
+      font-size: 15px;
+    }
+
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+    }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    button {
+      padding: 11px 20px;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 15px;
+    }
+
+    #submit-btn {
+      background: #2563eb;
+      color: white;
+    }
+
+    #cancel-btn {
+      background: #e5e7eb;
+      color: #111827;
+    }
+
+    .info {
+      margin-top: 28px;
+      padding: 14px;
+      background: #f3f4f6;
+      border-radius: 7px;
+      font-size: 14px;
+    }
+
+    .info strong {
+      display: block;
+      margin-bottom: 5px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <main class="container">
+
+    <h1>RedactVision Agent Test Page</h1>
+
+    <p class="subtitle">
+      Controlled webpage for testing local DOM perception.
+    </p>
+
+    <form id="demo-form">
+
+      <div class="form-group">
+        <label for="full-name">Full Name</label>
+
+        <input
+          id="full-name"
+          name="fullName"
+          type="text"
+          placeholder="Enter your full name"
+          autocomplete="name"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="email">Email Address</label>
+
+        <input
+          id="email"
+          name="email"
+          type="email"
+          placeholder="Enter your email"
+          autocomplete="email"
+          value="rahul@gmail.com"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="phone">Phone Number</label>
+
+        <input
+          id="phone"
+          name="phone"
+          type="tel"
+          placeholder="Enter your phone number"
+          autocomplete="tel"
+          value="9876543210"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+
+        <input
+          id="password"
+          name="password"
+          type="password"
+          placeholder="Enter your password"
+          value="MySecretPassword123"
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="country">Country</label>
+
+        <select id="country" name="country">
+          <option value="">Select country</option>
+          <option value="india">India</option>
+          <option value="usa">United States</option>
+          <option value="uk">United Kingdom</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="message">Message</label>
+
+        <textarea
+          id="message"
+          name="message"
+          placeholder="Enter your message"
+        >Please contact Rahul about his account.</textarea>
+      </div>
+
+      <div class="actions">
+
+        <button
+          id="submit-btn"
+          type="submit"
+        >
+          Submit Form
+        </button>
+
+        <button
+          id="cancel-btn"
+          type="button"
+        >
+          Cancel
+        </button>
+
+      </div>
+
+    </form>
+
+    <div class="info">
+      <strong>Test Information</strong>
+
+      This page intentionally contains different types of
+      DOM elements and sample sensitive-looking values for
+      RedactVision Agent development.
+    </div>
+
+  </main>
+
+  <script>
+    document
+      .getElementById("demo-form")
+      .addEventListener("submit", function (event) {
+        event.preventDefault();
+
+        alert("Test form submitted.");
+      });
+
+    document
+      .getElementById("cancel-btn")
+      .addEventListener("click", function () {
+        alert("Cancel clicked.");
+      });
+  </script>
+
+</body>
+</html>
