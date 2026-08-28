@@ -12,7 +12,7 @@ SIH26171 — On-device Visual Perception for Light-weight Browser Agents
 
 ## Project
 
-RedactVision Agent
+Product Name: RedactVision Agent
 
 ## Current Prototype
 
