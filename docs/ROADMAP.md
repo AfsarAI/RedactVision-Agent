@@ -956,9 +956,24 @@ Completed:
 - Phase 2 — DOM Perception
 - Phase 3 — Local Privacy Firewall
 - Phase 4 — Semantic Tokenization
+- Phase 5 — Agent Popup / User Interface (original)
+- Phase 6 — Local Agent Task State Machine
+- Phase 7 — Secure Client/Server Transport (FastAPI WebSocket)
+- Phase 8 — Agentic Loop & Action Planning (chat UI, deterministic planner, agent session)
+- **Phase 9–12 (incremental) — LLM-backed agent**
+  - Phase 9 — Local action validation (in `ActionExecutor.validate()`)
+  - Phase 10 — Browser action executor (click/type/scroll/select/wait, token resolution)
+  - Phase 11 — Multi-iteration feedback loop (max 5 iterations, respects `done` flag)
+  - Phase 12 — Reasoning backend abstraction with two real LLM paths:
+    - **Server-side**: OpenAI-compatible (Groq by default) at `POST /llm/plan`
+    - **On-device**: Transformers.js + Qwen2.5-1.5B-Instruct (q4) with WebGPU auto-detect
+  - Settings UI: choose backend, configure URL/key, test connection
+  - All 24 client smoke tests + 12 server smoke tests pass
 
 Current priority:
 
-- Phase 5 — Agent Popup / User Interface
+- Phase 13 — Visual redaction (image-based sensitive content)
+- Phase 14 — VLM integration (multi-modal server reasoning)
+- Phase 15 — Security hardening (allowlists, prompt-injection defense)
 
-Do NOT proceed to server/VLM/visual-perception development until Phase 5 and the local agent interaction flow are working.
+Do NOT mark future functionality as completed unless it actually works.

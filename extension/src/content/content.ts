@@ -1,49 +1,47 @@
+/**
+ * RedactVision Agent - Content script
+ *
+ * Responsibilities:
+ *  - Capture DOM locally (never sent to server)
+ *  - Run the local privacy firewall + tokenization
+ *  - Inject a floating launcher pill at the bottom-right of every page
+ *  - On launcher click, open a 380×580 floating chat card anchored above
+ *    the launcher (draggable, minimizable, closeable)
+ *  - Owns the AgentSession that drives the in-page chat
+ *  - Persists the card's drag offset per-hostname to chrome.storage.local
+ *  - Replies to chrome.runtime messages from the popup with safe summaries
+ *
+ * Card styles are loaded from the bundled chat-ui.css via
+ * `chrome.runtime.getURL()` so we don't ship a hand-duplicated copy.
+ */
+
 import { extractPageDOM } from "./dom-extractor";
 import { PrivacyFirewall } from "../privacy/privacy-firewall";
+import { AgentSession } from "../agent/agent-session";
 import {
-  AgentUIHandles,
-  TokenRecordSafe,
-  buildAgentUI,
-  injectSharedStyles,
-  makeSafeHint,
-  runAgentFlow,
-} from "../ui/agent-ui";
-import { runRealAgentFlow } from "../server/real-agent-flow";
+  buildChatUI,
+  ChatUIHandles,
+  RedactionSummary,
+} from "../ui/chat-ui";
+import {
+  loadPlannerConfig,
+  savePlannerConfig,
+  PlannerConfig,
+} from "../llm/llm-planner";
 
 console.log("RedactVision Agent: Content Script Loaded");
 
-// Configuration: Set to true to use real server, false for mock
-const USE_REAL_SERVER = true;
-const SERVER_URL = "ws://127.0.0.1:8001/ws/agent";
+/* ============================================================
+ *  Local perception + privacy firewall (run once on page load)
+ *  - rawPageDOM is NEVER sent to the server.
+ *  - sanitizedPageDOM is the only thing that can leave the device.
+ * ============================================================ */
 
-/*
- * Capture raw DOM locally.
- */
-const rawPageDOM = extractPageDOM();
-
-/*
- * Run privacy firewall locally.
- */
 const privacyFirewall = new PrivacyFirewall();
+const sanitizedPageDOM = privacyFirewall.sanitizePage(extractPageDOM());
 
-const sanitizedPageDOM = privacyFirewall.sanitizePage(rawPageDOM);
-
-/*
- * Do NOT log rawPageDOM.
- *
- * Future server communication must use
- * sanitizedPageDOM only.
- */
 console.log("RedactVision Agent: Sanitized Page DOM");
 console.log(sanitizedPageDOM);
-
-/*
- * LOCAL ONLY.
- *
- * This is for development/testing.
- * The token map must never be sent to
- * the server.
- */
 console.log(
   "RedactVision Agent: Local Token Count",
   privacyFirewall.getLocalTokenMap().length
@@ -54,286 +52,256 @@ console.log(
 );
 
 /* ============================================================
- *  In-page floating agent indicator + panel
- *  --------------------------------------------------------
- *  This stays inside the page DOM. It does NOT open
- *  chrome-extension:// URLs.
+ *  Stylesheet injection
+ *  - Fetch the shared chat-ui.css from the extension at runtime so
+ *    we don't ship a hand-duplicated 270-line CSS blob.
+ *  - On failure (e.g. file:// URLs), fall back to a minimal inline
+ *    style so the card is at least usable.
  * ============================================================ */
 
-let inPagePanel: { root: HTMLElement; handles: AgentUIHandles; flowSignal: { cancelled: boolean } } | null = null;
+const STYLE_TAG_ID = "rv-chat-styles";
+const STYLE_FALLBACK = `
+  .rv-chat { position:fixed;bottom:90px;right:20px;width:380px;height:580px;
+    background:#131a30;color:#e6ecff;border:1px solid #2a3155;border-radius:16px;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","SF Pro Text",Inter,Roboto,sans-serif;
+    font-size:13px;z-index:2147483646;display:flex;flex-direction:column;overflow:hidden;
+    box-shadow:0 20px 25px -5px rgba(0,0,0,.5),0 8px 10px -6px rgba(0,0,0,.4);
+  }
+  .rv-chat-header{display:flex;align-items:center;gap:10px;padding:12px 14px 11px;border-bottom:1px solid #2a3155;flex-shrink:0;cursor:grab;user-select:none}
+  .rv-chat-brand{display:flex;align-items:center;gap:9px;flex:1;min-width:0}
+  .rv-chat-avatar{width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;letter-spacing:.5px;color:#fff;background:linear-gradient(135deg,#5b6bff,#22d3a0);border-radius:8px;box-shadow:0 2px 8px rgba(91,107,255,.4);flex-shrink:0}
+  .rv-chat-title{font-size:12.5px;font-weight:600;color:#e6ecff;letter-spacing:-.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .rv-chat-status-row{display:flex;align-items:center;gap:5px;font-size:10.5px;color:#94a3b8;margin-top:1px}
+  .rv-chat-dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
+  .rv-chat-dot.rv-ready{background:#22d3a0;box-shadow:0 0 6px rgba(34,211,160,.7)}
+  .rv-backend-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;font-size:10px;font-weight:600;border-radius:999px;background:rgba(91,107,255,.18);color:#e6ecff;border:1px solid rgba(91,107,255,.18);letter-spacing:.2px;flex-shrink:0}
+  .rv-backend-pill .rv-backend-dot{width:5px;height:5px;border-radius:50%;background:#e6ecff}
+  .rv-chat-controls{display:flex;gap:4px;flex-shrink:0}
+  .rv-icon-btn{width:24px;height:24px;display:flex;align-items:center;justify-content:center;background:0 0;border:1px solid transparent;border-radius:6px;color:#94a3b8;font-size:14px;line-height:1;cursor:pointer}
+  .rv-conversation{flex:1;overflow-y:auto;padding:14px 14px 8px;display:flex;flex-direction:column;gap:8px;scroll-behavior:smooth;min-height:0}
+  .rv-msg{display:flex;align-items:flex-start;gap:8px;padding:8px 10px;border-radius:10px;font-size:12.5px;line-height:1.5}
+  .rv-msg.rv-user{align-self:flex-end;max-width:85%;background:linear-gradient(135deg,rgba(91,107,255,.30),rgba(91,107,255,.18));border:1px solid rgba(91,107,255,.45);padding:7px 12px;border-radius:14px 14px 4px 14px}
+  .rv-msg-body{flex:1;min-width:0;color:#e6ecff}
+  .rv-composer{display:flex;align-items:flex-end;gap:8px;padding:10px 12px 12px;border-top:1px solid rgba(91,107,255,.18);background:rgba(7,11,24,.55);flex-shrink:0}
+  .rv-input{flex:1;resize:none;background:rgba(15,23,42,.65);color:#e6ecff;border:1px solid rgba(91,107,255,.18);border-radius:10px;padding:9px 12px;font-family:inherit;font-size:13px;line-height:1.4;max-height:100px;outline:none}
+  .rv-send-btn{width:36px;height:36px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#5b6bff,#4554e6);color:#fff;border:none;border-radius:10px;cursor:pointer;font-size:14px;flex-shrink:0;box-shadow:0 2px 8px rgba(91,107,255,.30)}
+  .rv-privacy-bar{height:2px;width:100%;background:linear-gradient(90deg,rgba(91,107,255,.4),rgba(34,211,160,.4),rgba(91,107,255,.4));background-size:200% 100%;flex-shrink:0}
+`;
 
-/**
- * Build a safe summary of the local token map.
- * NEVER include original sensitive values in the network-facing response.
- * The maskedHint is for local prototype display only and is stripped before any future transmission.
- */
-function getSafeTokenSummary(): TokenRecordSafe[] {
-  return privacyFirewall.getLocalTokenMap().map((record) => ({
-    token: record.token,
-    type: record.type,
-    // Local-only masked hint for prototype display.
-    // Do NOT include in any future server payload.
-    maskedHint: makeSafeHint(record.originalValue, record.type),
-  }));
+async function injectChatStyles(): Promise<void> {
+  if (document.getElementById(STYLE_TAG_ID)) return;
+  let css: string | null = null;
+  // Only attempt to fetch from the extension if the context is still
+  // valid (a stale content script — e.g. after extension reload — will
+  // throw "Extension context invalidated" the moment we touch
+  // chrome.runtime.getURL).
+  const ctxValid = (() => {
+    try {
+      return !!chrome.runtime?.id;
+    } catch {
+      return false;
+    }
+  })();
+  if (ctxValid) {
+    try {
+      const cssUrl = chrome.runtime.getURL("ui/chat-ui.css");
+      const resp = await fetch(cssUrl);
+      if (resp.ok) css = await resp.text();
+    } catch (e) {
+      console.warn(
+        "[RedactVision] Could not load chat-ui.css from extension bundle, using bundled fallback:",
+        e instanceof Error ? e.message : e
+      );
+    }
+  }
+  if (!css) css = STYLE_FALLBACK;
+  const style = document.createElement("style");
+  style.id = STYLE_TAG_ID;
+  style.setAttribute("data-rv-chat-styles", "true");
+  style.textContent = css;
+  document.head.appendChild(style);
 }
 
-/**
- * Open the in-page agent panel as an overlay.
- * The panel lives inside the page DOM (not a new window/tab).
- */
-function openInPagePanel(): void {
-  if (inPagePanel) {
-    // Already open — just bring it to front
-    inPagePanel.root.style.display = "block";
+/* ============================================================
+ *  In-page chat panel
+ *  - Renders the floating chatbot card (no chrome-extension:// iframe).
+ *  - Owns its own AgentSession that persists across prompts.
+ *  - Position offset is restored from chrome.storage.local on open and
+ *    saved on drag-end.
+ * ============================================================ */
+
+type PanelHandle = {
+  root: HTMLElement;
+  overlay: HTMLElement;
+  ui: ChatUIHandles;
+  session: AgentSession;
+  sessionSignal: { cancelled: boolean };
+};
+
+let panel: PanelHandle | null = null;
+
+const HOSTNAME = (() => {
+  try {
+    return window.location.hostname || "unknown";
+  } catch {
+    return "unknown";
+  }
+})();
+
+const OFFSET_KEY = `rv_widget_offset_${HOSTNAME}`;
+
+function getStoredOffset(): Promise<{ dx: number; dy: number }> {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(OFFSET_KEY, (data: Record<string, unknown>) => {
+        const o = data?.[OFFSET_KEY] as { dx?: number; dy?: number } | undefined;
+        if (o && typeof o.dx === "number" && typeof o.dy === "number") {
+          resolve({ dx: o.dx, dy: o.dy });
+        } else {
+          resolve({ dx: 0, dy: 0 });
+        }
+      });
+    } catch {
+      resolve({ dx: 0, dy: 0 });
+    }
+  });
+}
+
+function setStoredOffset(offset: { dx: number; dy: number }): void {
+  try {
+    chrome.storage.local.set({ [OFFSET_KEY]: offset });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function openInPagePanel(): Promise<void> {
+  if (panel) {
+    // Already open — restore from minimized state and refocus.
+    panel.ui.setMinimized(false);
+    panel.root.style.display = "flex";
+    panel.ui.focusInput();
     return;
   }
 
-  injectSharedStyles(document);
+  await injectChatStyles();
+  await openInPagePanelAsync();
+}
 
+async function openInPagePanelAsync(): Promise<void> {
+  // The overlay is just a positioning wrapper. The chat card inside
+  // it is what the user sees and drags. We make the overlay cover the
+  // page so we can layer the card on top of it (the card has
+  // `position: fixed` already, so technically the overlay could be
+  // omitted — but it gives us a stable container for cleanup).
   const overlay = document.createElement("div");
   overlay.id = "rv-inpage-overlay";
   overlay.style.cssText = `
     position: fixed;
-    top: 0; right: 0; bottom: 0;
-    width: 380px;
-    z-index: 2147483646;
-    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
-    display: flex;
-    flex-direction: column;
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-    border-left: 1px solid rgba(148, 163, 184, 0.2);
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    inset: 0;
+    z-index: 2147483645;
+    pointer-events: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   `;
-
   document.body.appendChild(overlay);
 
-  const handles = buildAgentUI(overlay);
-  const flowSignal = { cancelled: false };
+  const ui = buildChatUI(overlay);
 
-  handles.root.addEventListener("rv-close", () => {
+  // Restore persisted drag offset.
+  const offset = await getStoredOffset();
+  ui.setDragOffset(offset.dx, offset.dy);
+
+  // Load planner config.
+  const config: PlannerConfig = await loadPlannerConfig();
+
+  const session = new AgentSession(
+    {
+      onActivity: (activity) => ui.appendActivity(activity),
+      onPlanResult: (result) => {
+        // The planner may return undefined (e.g. pure error). Default to
+        // a label derived from the source.
+        const label =
+          result.backendLabel ||
+          (result.source === "server-llm"
+            ? "Server"
+            : result.source === "fallback-rules"
+            ? "Local rules"
+            : "—");
+        ui.setBackend(label);
+      },
+    },
+    config
+  );
+
+  const sessionSignal = { cancelled: false };
+
+  // Render the initial redaction summary using whatever the privacy
+  // firewall found on the first page scan.
+  const initialSummary: RedactionSummary = session.getRedactionSummary(false);
+  ui.setRedactionSummary(initialSummary);
+
+  ui.setStatus("ready", "Ready");
+  ui.clearConversation();
+  ui.setBackend("Local"); // initial state, replaced on first plan
+
+  ui.onSend(async (text) => {
+    ui.setInputValue("");
+    ui.setInputEnabled(false);
+    ui.setStatus("thinking", "Working…");
+    try {
+      await session.runPrompt(text);
+      // After the prompt, re-summarize (page state may have changed).
+      ui.setRedactionSummary(session.getRedactionSummary(false));
+      ui.setStatus("completed", "Completed");
+    } catch (err) {
+      ui.setStatus("error", "Error");
+      console.error("[ContentScript] Agent error:", err);
+    } finally {
+      sessionSignal.cancelled = false;
+      ui.setInputEnabled(true);
+    }
+  });
+
+  ui.onCancel(() => {
+    sessionSignal.cancelled = true;
+    session.cancel();
+  });
+
+  ui.onMinimize(() => {
+    ui.setMinimized(true);
+  });
+
+  ui.onClose(() => {
     closeInPagePanel();
   });
 
-  wirePromptHandlers(handles, flowSignal);
+  ui.onDragEnd((off) => {
+    setStoredOffset(off);
+  });
 
-  inPagePanel = { root: overlay, handles, flowSignal };
+  panel = { root: overlay.firstElementChild as HTMLElement, overlay, ui, session, sessionSignal };
+  (ui.root as HTMLElement).style.pointerEvents = "auto";
+  // Re-attach pointer-events to the launcher too (it's a sibling).
+  const launcher = document.getElementById("rv-agent-indicator");
+  if (launcher) (launcher as HTMLElement).style.pointerEvents = "auto";
+
+  ui.focusInput();
 }
 
 function closeInPagePanel(): void {
-  if (!inPagePanel) return;
-  inPagePanel.flowSignal.cancelled = true;
-  inPagePanel.root.remove();
-  inPagePanel = null;
+  if (!panel) return;
+  panel.session.cancel();
+  panel.overlay.remove();
+  panel = null;
 }
 
-/**
- * Wire the in-page or popup prompt to the simulated agent flow.
- */
-function wirePromptHandlers(handles: AgentUIHandles, signal: { cancelled: boolean }): void {
-  const promptStage = handles.root.querySelector("#rv-prompt-stage") as HTMLElement;
-  const processingStage = handles.root.querySelector("#rv-processing-stage") as HTMLElement;
-  const processingText = handles.root.querySelector("#rv-processing-text") as HTMLElement;
-  const results = handles.root.querySelector("#rv-results") as HTMLElement;
-  const sendBtn = handles.root.querySelector("#rv-send-btn") as HTMLButtonElement;
-  const promptInput = handles.root.querySelector("#rv-prompt-input") as HTMLTextAreaElement;
-  const processingSteps = handles.root.querySelector("#rv-processing-steps") as HTMLElement;
+/* ============================================================
+ *  Floating launcher pill (opens the in-page panel)
+ *  - Persistent on every page; clicking it opens (or restores) the card.
+ *  - Draggable launcher is NOT supported — the launcher is a fixed
+ *    point of entry; the card itself is what the user drags.
+ * ============================================================ */
 
-  function addStep(text: string, state: "completed" | "active" | "pending"): void {
-    const step = document.createElement("div");
-    step.className = `rv-processing-step ${state === "pending" ? "" : `rv-${state}`}`;
-    const icon = state === "completed" ? "✓" : state === "active" ? "◌" : "○";
-    step.innerHTML = `<span class="rv-processing-step-icon">${icon}</span><span>${text}</span>`;
-    processingSteps.appendChild(step);
-  }
-
-  function reset(): void {
-    handles.reset();
-    promptStage.style.display = "block";
-    processingStage.style.display = "none";
-    results.style.display = "none";
-    processingSteps.innerHTML = "";
-  }
-
-  function startFlow(): void {
-    const text = promptInput.value.trim();
-    if (!text) return;
-
-    sendBtn.disabled = true;
-    promptInput.disabled = true;
-    promptStage.style.display = "none";
-    processingStage.style.display = "flex";
-    results.style.display = "block";
-    processingSteps.innerHTML = "";
-
-    if (USE_REAL_SERVER) {
-      // Use real server flow
-      runRealAgentFlow(
-        sanitizedPageDOM,
-        privacyFirewall,
-        text,
-        {
-          serverUrl: SERVER_URL,
-          onStageStart: (_stage, label, stepText) => {
-            processingText.textContent = label;
-            addStep(stepText, "active");
-          },
-          onStageComplete: (_stage) => {
-            const lastStep = processingSteps.lastElementChild as HTMLElement | null;
-            if (lastStep) {
-              lastStep.classList.remove("rv-active");
-              lastStep.classList.add("rv-completed");
-            }
-          },
-          onPrivacy: (t) => handles.showPrivacyStage(t as TokenRecordSafe[]),
-          onTokenization: (t) => handles.showTokenizationStage(t as TokenRecordSafe[]),
-          onSanitized: () => handles.showSanitizedStage(),
-          onConnecting: () => {
-            handles.showAgentStage();
-          },
-          onConnected: () => {
-            const agentSection = handles.root.querySelector("#rv-agent-section");
-            if (agentSection) {
-              agentSection.innerHTML = `
-                <h2 class="rv-section-title"><span>🤖</span> Server Connected</h2>
-                <div class="rv-agent-info">
-                  <div class="rv-agent-row">✓ Connected to RedactVision server</div>
-                  <div class="rv-agent-row" style="font-size:11px;color:#94a3b8">Waiting for agent reasoning...</div>
-                </div>
-              `;
-              (agentSection as HTMLElement).style.display = "block";
-            }
-          },
-          onServerAction: (action) => {
-            handles.showActionStage({
-              type: action.action,
-              target: action.target,
-              confidence: action.confidence,
-            });
-          },
-          onValidation: (passed, message) => {
-            handles.showValidationStage(passed, message);
-          },
-          onExecution: (executed, result) => {
-            console.log("[ContentScript] onExecution called:", executed, result);
-            try {
-              handles.showExecutionStage(executed, result);
-              // Hide the processing stage spinner/text
-              const processingStage = handles.root.querySelector("#rv-processing-stage") as HTMLElement;
-              if (processingStage) {
-                processingStage.style.display = "none";
-              }
-              console.log("[ContentScript] showExecutionStage completed");
-            } catch (err) {
-              console.error("[ContentScript] Error in showExecutionStage:", err);
-            }
-          },
-          onDone: () => {
-            console.log("[ContentScript] onDone called - should show completed");
-            try {
-              sendBtn.disabled = false;
-              promptInput.disabled = false;
-              handles.setStage("completed", "Completed");
-              // Ensure processing stage is hidden
-              const processingStage = handles.root.querySelector("#rv-processing-stage") as HTMLElement;
-              if (processingStage) {
-                processingStage.style.display = "none";
-              }
-              console.log("[ContentScript] setStage completed completed");
-            } catch (err) {
-              console.error("[ContentScript] Error in onDone:", err);
-            }
-          },
-          onError: (error) => {
-            sendBtn.disabled = false;
-            promptInput.disabled = false;
-            handles.setStage("error", `Error: ${error}`);
-            console.error("[ContentScript] Agent flow error:", error);
-          },
-        },
-        signal
-      ).catch((err) => {
-        console.error("[ContentScript] Unexpected error:", err);
-        sendBtn.disabled = false;
-        promptInput.disabled = false;
-        handles.setStage("error", "Unexpected error");
-      });
-    } else {
-      // Use mock flow (Phase 5/6 behavior)
-      const tokens = getSafeTokenSummary();
-
-      runAgentFlow(
-        tokens,
-        {
-          onStageStart: (_stage, label, stepText) => {
-            processingText.textContent = label;
-            addStep(stepText, "active");
-          },
-          onStageComplete: (_stage) => {
-            const lastStep = processingSteps.lastElementChild as HTMLElement | null;
-            if (lastStep) {
-              lastStep.classList.remove("rv-active");
-              lastStep.classList.add("rv-completed");
-            }
-          },
-          onPrivacy: (t) => handles.showPrivacyStage(t),
-          onTokenization: (t) => handles.showTokenizationStage(t),
-          onSanitized: () => handles.showSanitizedStage(),
-          onAgent: () => handles.showAgentStage(),
-          onAction: () => {
-            const t = promptInput.value.toLowerCase();
-            let action = { type: "CLICK", target: "#submit-btn", confidence: 0.98 };
-            if (t.includes("fill") || t.includes("enter") || t.includes("type")) {
-              action = { type: "TYPE", target: "#full-name", confidence: 0.95 };
-            } else if (t.includes("cancel")) {
-              action = { type: "CLICK", target: "#cancel-btn", confidence: 0.99 };
-            } else if (t.includes("phone")) {
-              action = { type: "TYPE", target: "#phone", confidence: 0.94 };
-            } else if (t.includes("email")) {
-              action = { type: "TYPE", target: "#email", confidence: 0.97 };
-            } else if (t.includes("password")) {
-              action = { type: "TYPE", target: "#password", confidence: 0.93 };
-            }
-            handles.showActionStage(action);
-          },
-          onValidation: (passed, message) => {
-            handles.showValidationStage(passed, message);
-          },
-          onExecution: (executed, result) => {
-            handles.showExecutionStage(executed, result);
-          },
-          onDone: () => {
-            sendBtn.disabled = false;
-            promptInput.disabled = false;
-            handles.setStage("completed", "Completed");
-          },
-          onError: () => {
-            sendBtn.disabled = false;
-            promptInput.disabled = false;
-            handles.setStage("error", "Error");
-          },
-        },
-        signal
-      ).catch(() => {
-        sendBtn.disabled = false;
-        promptInput.disabled = false;
-      });
-    }
-  }
-
-  sendBtn.addEventListener("click", startFlow);
-  promptInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      startFlow();
-    }
-  });
-
-  // Expose reset for the popup to trigger
-  (handles as unknown as { __reset?: () => void }).__reset = reset;
-}
-
-/**
- * Inject the floating indicator button that opens the in-page panel.
- */
 function injectAgentIndicator(): void {
   if (document.getElementById("rv-agent-indicator")) return;
 
@@ -344,37 +312,58 @@ function injectAgentIndicator(): void {
       position: fixed;
       bottom: 20px;
       right: 20px;
-      z-index: 2147483645;
+      z-index: 2147483644;
       cursor: pointer;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       transition: transform 0.2s, box-shadow 0.2s;
+      pointer-events: auto;
     }
     #rv-agent-indicator:hover {
       transform: translateY(-2px);
-      box-shadow: 0 6px 24px rgba(59, 130, 246, 0.4);
     }
     .rv-indicator-inner {
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 9px 16px;
-      background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-      border: 1px solid rgba(59, 130, 246, 0.4);
-      border-radius: 24px;
-      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
-      font-size: 13px;
+      padding: 8px 14px 8px 12px;
+      background: linear-gradient(135deg, #0e1428 0%, #131a30 100%);
+      border: 1px solid rgba(91, 107, 255, 0.4);
+      border-radius: 999px;
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+      font-size: 12.5px;
       font-weight: 500;
-      color: #e2e8f0;
+      color: #e6ecff;
+      backdrop-filter: blur(10px);
     }
     .rv-indicator-icon {
-      font-size: 16px;
-      filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.5));
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: white;
+      background: linear-gradient(135deg, #5b6bff 0%, #22d3a0 100%);
+      border-radius: 6px;
     }
-    .rv-indicator-name { color: #e2e8f0; font-weight: 600; }
+    .rv-indicator-name { color: #e6ecff; font-weight: 600; }
     .rv-indicator-status {
-      color: #22c55e;
-      font-size: 12px;
-      margin-left: 4px;
+      color: #22d3a0;
+      font-size: 10.5px;
+      margin-left: 2px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .rv-indicator-status::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #22d3a0;
+      box-shadow: 0 0 4px #22d3a0;
     }
   `;
   document.head.appendChild(style);
@@ -383,51 +372,50 @@ function injectAgentIndicator(): void {
   indicator.id = "rv-agent-indicator";
   indicator.innerHTML = `
     <div class="rv-indicator-inner">
-      <span class="rv-indicator-icon">🤖</span>
-      <span class="rv-indicator-name">RedactVision Agent</span>
-      <span class="rv-indicator-status">● Ready</span>
+      <span class="rv-indicator-icon">RV</span>
+      <span class="rv-indicator-name">RedactVision</span>
+      <span class="rv-indicator-status">Ready</span>
     </div>
   `;
   document.body.appendChild(indicator);
 
-  indicator.addEventListener("click", openInPagePanel);
+  indicator.addEventListener("click", () => {
+    void openInPagePanel();
+  });
 }
 
 injectAgentIndicator();
 
 /* ============================================================
- *  Message handler for the Chrome toolbar popup
- *  --------------------------------------------------------
- *  The popup requests SAFE summaries only:
- *  - token count
- *  - token types + tokens
- *  - sanitized DOM
- *
- *  The original token map is NEVER sent.
- *  No chrome-extension:// windows are opened from here.
+ *  Popup message bridge
+ *  - The popup can ask for safe summaries only.
+ *  - Original token map is NEVER sent.
  * ============================================================ */
 
 chrome.runtime.onMessage.addListener(
   (message: unknown, _sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => {
-    if (typeof message !== "object" || message === null) {
-      return;
-    }
-
+    if (typeof message !== "object" || message === null) return;
     const msg = message as { type?: string };
 
     if (msg.type === "GET_PRIVACY_STATUS") {
+      const tokens = privacyFirewall.getLocalTokenMap().map((r) => ({
+        token: r.token,
+        type: r.type,
+      }));
       sendResponse({
-        tokenCount: privacyFirewall.getLocalTokenMap().length,
-        tokens: getSafeTokenSummary(),
+        tokenCount: tokens.length,
+        tokens,
         sanitizedDOM: sanitizedPageDOM,
       });
       return true;
     }
 
     if (msg.type === "GET_SAFE_TOKENS") {
-      sendResponse({
-        tokens: getSafeTokenSummary(),
-      });
+      const tokens = privacyFirewall.getLocalTokenMap().map((r) => ({
+        token: r.token,
+        type: r.type,
+      }));
+      sendResponse({ tokens });
       return true;
     }
   }

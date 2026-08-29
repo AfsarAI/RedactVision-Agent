@@ -11,12 +11,38 @@ Privacy contract:
 
 Run with:
     cd server && uvicorn redactvision_server.main:app --reload --port 8001
+
+Environment variables (.env) are loaded automatically from the project
+root, regardless of where uvicorn was started from.
 """
 
-import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Optional
+
+# Load .env BEFORE importing any module that reads environment variables.
+# We look for .env in the project root (one directory up from this file's
+# package: server/redactvision_server/main.py → ../../.env).
+try:
+    from dotenv import load_dotenv  # python-dotenv (declared in pyproject)
+
+    _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    _ENV_PATH = _PROJECT_ROOT / ".env"
+    if _ENV_PATH.exists():
+        load_dotenv(_ENV_PATH, override=False)
+        # Surface the discovery in the startup logs so users can see
+        # which file the server picked up.
+        logging.getLogger("redactvision_server").info(
+            "Loaded environment from %s", _ENV_PATH
+        )
+    else:
+        logging.getLogger("redactvision_server").info(
+            "No .env found at %s — relying on OS environment", _ENV_PATH
+        )
+except ImportError:
+    # python-dotenv not installed; fall back to OS env silently.
+    pass
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,12 +50,16 @@ from fastapi.responses import JSONResponse
 
 from .types import (
     SanitizedEvent,
+    PlanRequest,
+    PlanResponse,
     ServerAction,
     ServerMessage,
     ActionType,
     ConnectionStatus,
 )
 from .mock_agent import determine_action, validate_action_request
+from .llm import plan_with_llm, health as llm_health, is_configured as llm_configured, validate_action_shape as llm_validate_action_shape
+from .providers import discover_all as discover_provider_models
 
 
 # Configure logging
@@ -75,6 +105,29 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+@app.on_event("startup")
+async def startup_discover_providers() -> None:
+    """
+    On startup, ask each configured provider for a working model and
+    cache it. This means the server doesn't need the user to keep
+    `server/.env` model names in sync with each provider's current
+    offerings — if a slug is stale, we discover a fresh one.
+    """
+    if not llm_configured():
+        logger.info("No LLM providers configured at startup; skipping discovery.")
+        return
+    try:
+        results = discover_provider_models(timeout=8.0)
+        picked = {k: v for k, v in results.items() if v}
+        if picked:
+            logger.info("Auto-discovered working models: %s", picked)
+        else:
+            logger.warning("Provider discovery returned no working models. "
+                           "Calls will use the static env-var defaults.")
+    except Exception as exc:
+        logger.warning("Provider discovery failed: %s", exc)
 
 
 @app.get("/")
@@ -241,6 +294,83 @@ async def analyze_page(event: SanitizedEvent):
 
     action = determine_action(event)
     return {"action": action.model_dump(exclude_none=True)}
+
+
+# ===================================================================
+# LLM-backed planner endpoints
+# ===================================================================
+
+@app.get("/llm/health")
+async def llm_health_endpoint():
+    """Report LLM backend configuration status."""
+    return llm_health()
+
+
+@app.post("/llm/discover")
+async def llm_discover_endpoint():
+    """
+    Re-run provider model discovery. The startup hook does this
+    automatically; this endpoint is for forcing a refresh (e.g. after
+    the user rotates a key).
+    """
+    try:
+        results = discover_provider_models(timeout=8.0)
+        return {"ok": True, "discovered": results}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "discovered": {}}
+
+
+@app.post("/llm/plan")
+async def llm_plan(request: PlanRequest):
+    """
+    Plan one action using the configured LLM.
+
+    Request body:
+      - url, title, elements: sanitized page context
+      - prompt: user's natural language task
+      - history: optional list of previous actions (for multi-iteration)
+
+    Response:
+      - action: structured action dict matching the LLM action schema
+      - source: "server-llm" or "fallback"
+
+    Privacy: re-runs validate_action_request to ensure no raw PII slips in.
+    """
+    # Re-package as a SanitizedEvent so the privacy check works unchanged
+    fake_event = SanitizedEvent(
+        url=request.url,
+        title=request.title,
+        elements=request.elements,
+        prompt=request.prompt or "",
+        timestamp=request.timestamp or 0.0,
+    )
+    is_valid, error = validate_action_request(fake_event)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=f"Privacy violation: {error}")
+
+    if not llm_configured():
+        # Graceful fallback to the deterministic mock planner
+        logger.info("LLM not configured — using mock planner")
+        action = determine_action(fake_event)
+        return PlanResponse(
+            action=action.model_dump(exclude_none=True),
+            source="fallback-mock",
+            provider="Local rules",
+        )
+
+    try:
+        raw, provider_name = plan_with_llm(fake_event, history=request.history)
+        validated = llm_validate_action_shape(raw)
+        return PlanResponse(action=validated, source="server-llm", provider=provider_name)
+    except (RuntimeError, ValueError) as e:
+        logger.error("LLM plan failed: %s — falling back to mock", e)
+        # On LLM failure, return a useful error AND a fallback so the client can keep going
+        action = determine_action(fake_event)
+        return PlanResponse(
+            action=action.model_dump(exclude_none=True),
+            source="fallback-mock",
+            provider="Local rules",
+        )
 
 
 @app.exception_handler(Exception)

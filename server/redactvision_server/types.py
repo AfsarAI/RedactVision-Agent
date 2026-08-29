@@ -58,6 +58,29 @@ class SanitizedEvent(BaseModel):
     timestamp: float = Field(..., description="Unix timestamp of capture")
 
 
+class PlanRequest(BaseModel):
+    """Body for POST /llm/plan — same shape as SanitizedEvent plus optional history."""
+    url: str
+    title: str
+    elements: list
+    prompt: Optional[str] = None
+    history: Optional[list] = None
+    timestamp: Optional[float] = None
+
+
+class PlanResponse(BaseModel):
+    action: dict = Field(..., description="Structured LLM action")
+    source: str = Field(..., description="Which backend produced this (server-llm / mock / fallback)")
+    provider: Optional[str] = Field(
+        None,
+        description="Display label of the LLM provider that actually answered (e.g. 'Groq', 'Gemini').",
+    )
+    model: Optional[str] = Field(
+        None,
+        description="Specific model slug that answered (e.g. 'llama-3.3-70b-versatile').",
+    )
+
+
 class ConnectionStatus(BaseModel):
     """Server connection status update to client."""
     connected: bool

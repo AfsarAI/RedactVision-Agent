@@ -1,12 +1,18 @@
 {
   "manifest_version": 3,
   "name": "RedactVision Agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Privacy-preserving browser agent for SIH Problem Statement 26171.",
   "permissions": [
     "activeTab",
     "scripting",
     "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*",
+    "https://huggingface.co/*",
+    "https://cdn-lfs.huggingface.co/*"
   ],
   "action": {
     "default_title": "RedactVision Agent",
@@ -21,6 +27,12 @@
       "matches": ["<all_urls>"],
       "js": ["dist/content/content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/ui/chat-ui.css"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

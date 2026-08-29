@@ -4,24 +4,154 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>RedactVision Agent</title>
-  <style>
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    html, body {
-      width: 380px;
-      min-height: 500px;
-      max-height: 600px;
-      overflow: hidden;
-    }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    }
-  </style>
+  <link rel="stylesheet" href="popup.css" />
 </head>
 <body>
+  <main class="rv-dash">
+    <!-- ===== Header ===== -->
+    <header class="rv-dash-header">
+      <div class="rv-dash-brand">
+        <div class="rv-dash-avatar">RV</div>
+        <div class="rv-dash-brand-text">
+          <div class="rv-dash-title">RedactVision</div>
+          <div class="rv-dash-version">v0.2.0 · SIH 26171</div>
+        </div>
+      </div>
+      <label class="rv-switch" title="Enable the agent on the current site">
+        <input type="checkbox" id="rv-active-toggle" checked />
+        <span class="rv-switch-track">
+          <span class="rv-switch-thumb"></span>
+        </span>
+      </label>
+    </header>
+
+    <div class="rv-dash-scroll">
+      <!-- ===== Quick Toggles ===== -->
+      <section class="rv-section">
+        <div class="rv-section-label">On this page</div>
+
+        <div class="rv-row">
+          <div class="rv-row-text">
+            <div class="rv-row-title">Show floating widget</div>
+            <div class="rv-row-detail">Bottom-right launcher pill & chat card</div>
+          </div>
+          <label class="rv-switch rv-sm">
+            <input type="checkbox" id="rv-show-widget" checked />
+            <span class="rv-switch-track">
+              <span class="rv-switch-thumb"></span>
+            </span>
+          </label>
+        </div>
+
+        <div class="rv-row">
+          <div class="rv-row-text">
+            <div class="rv-row-title">Auto-redact sensitive data</div>
+            <div class="rv-row-detail">Tokenize PII before any server call</div>
+          </div>
+          <label class="rv-switch rv-sm">
+            <input type="checkbox" id="rv-auto-redact" checked />
+            <span class="rv-switch-track">
+              <span class="rv-switch-thumb"></span>
+            </span>
+          </label>
+        </div>
+      </section>
+
+      <!-- ===== Reasoning Engine ===== -->
+      <section class="rv-section">
+        <div class="rv-section-label">Reasoning engine</div>
+        <div class="rv-pill-group" role="radiogroup" aria-label="Reasoning engine">
+          <label class="rv-pill" data-value="auto">
+            <input type="radio" name="rv-backend" value="auto" checked />
+            <span class="rv-pill-name">Auto</span>
+            <span class="rv-pill-hint">Smart fallback</span>
+          </label>
+          <label class="rv-pill" data-value="server">
+            <input type="radio" name="rv-backend" value="server" />
+            <span class="rv-pill-name">Server</span>
+            <span class="rv-pill-hint">LLM only</span>
+          </label>
+          <label class="rv-pill" data-value="on-device">
+            <input type="radio" name="rv-backend" value="on-device" />
+            <span class="rv-pill-name">On-device</span>
+            <span class="rv-pill-hint">Private</span>
+          </label>
+          <label class="rv-pill" data-value="local">
+            <input type="radio" name="rv-backend" value="local" />
+            <span class="rv-pill-name">Local rules</span>
+            <span class="rv-pill-hint">Offline</span>
+          </label>
+        </div>
+
+        <div class="rv-field" id="rv-server-field">
+          <label for="rv-server-url">Server URL</label>
+          <input
+            type="text"
+            id="rv-server-url"
+            placeholder="http://127.0.0.1:8001"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <div class="rv-field-hint">
+            API keys live in <code>server/.env</code> — the extension never sees them.
+          </div>
+        </div>
+
+        <button class="rv-btn rv-btn-ghost" id="rv-test-conn" type="button">
+          <span class="rv-btn-label">Test connection</span>
+        </button>
+        <div class="rv-test-result" id="rv-test-result"></div>
+      </section>
+
+      <!-- ===== Domain Whitelist ===== -->
+      <section class="rv-section">
+        <div class="rv-section-label">Domain whitelist</div>
+        <div class="rv-section-detail">
+          Only run the agent on these sites. Leave empty to run everywhere.
+        </div>
+        <div class="rv-chip-list" id="rv-domain-chips"></div>
+        <form class="rv-chip-form" id="rv-domain-form">
+          <input
+            type="text"
+            id="rv-domain-input"
+            placeholder="example.com"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button type="submit" class="rv-btn rv-btn-add" aria-label="Add domain">+</button>
+        </form>
+      </section>
+
+      <!-- ===== Theme ===== -->
+      <section class="rv-section">
+        <div class="rv-section-label">Appearance</div>
+        <div class="rv-pill-group rv-pill-group-3" role="radiogroup" aria-label="Theme">
+          <label class="rv-pill" data-value="dark">
+            <input type="radio" name="rv-theme" value="dark" checked />
+            <span class="rv-pill-name">Dark</span>
+          </label>
+          <label class="rv-pill" data-value="light">
+            <input type="radio" name="rv-theme" value="light" />
+            <span class="rv-pill-name">Light</span>
+          </label>
+          <label class="rv-pill" data-value="auto">
+            <input type="radio" name="rv-theme" value="auto" />
+            <span class="rv-pill-name">Auto</span>
+          </label>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== Footer ===== -->
+    <footer class="rv-dash-footer">
+      <div class="rv-status">
+        <span class="rv-status-dot rv-ok"></span>
+        <span id="rv-status-label">Settings saved automatically</span>
+      </div>
+      <button class="rv-btn rv-btn-primary" id="rv-done-btn" type="button">Done</button>
+    </footer>
+  </main>
+
   <script src="popup.js"></script>
 </body>
 </html>

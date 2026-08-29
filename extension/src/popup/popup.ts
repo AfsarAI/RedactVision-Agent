@@ -1,174 +1,328 @@
 /**
- * RedactVision Agent - Chrome Toolbar Popup Controller
+ * RedactVision Agent — Popup Dashboard Controller
  *
- * This popup uses the shared agent UI module to provide
- * a consistent experience with the in-page panel.
+ * The toolbar popup is a *settings dashboard*, not a chat. The chat
+ * lives in the floating in-page widget. This controller wires:
+ *
+ *   - Active toggle (master switch)
+ *   - Show floating widget toggle
+ *   - Auto-redact toggle
+ *   - 4-mode routing pill (AUTO / SERVER / ON-DEVICE / LOCAL)
+ *   - Server URL field
+ *   - Test connection button
+ *   - Domain whitelist (add / remove chips)
+ *   - Theme (DARK / LIGHT / AUTO)
+ *   - Auto-save on any change + a "Done" button to close
+ *
+ * Persistence is via chrome.storage.local under:
+ *   - "rv_agent_config"        — PlannerConfig (serverUrl, onDeviceModel, backend)
+ *   - "rv_dashboard_settings"  — everything else (toggles, theme, whitelist)
+ *
+ * NO API key is held or persisted. Provider keys live in server/.env.
  */
 
 import {
-  AgentUIHandles,
-  TokenRecordSafe,
-  buildAgentUI,
-  injectSharedStyles,
-  runAgentFlow,
-} from "../ui/agent-ui";
+  loadPlannerConfig,
+  savePlannerConfig,
+  PlannerConfig,
+  PlannerBackend,
+} from "../llm/llm-planner";
+import { pingServer } from "../llm/extension-bridge";
 
-// Initialize on DOMContentLoaded
-document.addEventListener("DOMContentLoaded", () => {
-  // Inject styles into popup document
-  injectSharedStyles(document);
+interface DashboardSettings {
+  active: boolean;
+  showWidget: boolean;
+  autoRedact: boolean;
+  theme: "dark" | "light" | "auto";
+  domainWhitelist: string[];
+}
 
-  // Build UI
-  const container = document.body;
-  const handles = buildAgentUI(container);
-  const flowSignal = { cancelled: false };
+const DEFAULT_DASHBOARD: DashboardSettings = {
+  active: true,
+  showWidget: true,
+  autoRedact: true,
+  theme: "dark",
+  domainWhitelist: [],
+};
 
-  // Wire handlers
-  wirePopupHandlers(handles, flowSignal);
+const STORAGE_KEY = "rv_dashboard_settings";
 
-  // Request initial privacy status from active tab
-  requestPrivacyStatus();
-});
-
-/**
- * Request privacy status from the content script
- */
-async function requestPrivacyStatus(): Promise<TokenRecordSafe[]> {
+async function loadDashboard(): Promise<DashboardSettings> {
   try {
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-
-    if (!tab?.id) {
-      return [];
-    }
-
-    const response = await chrome.tabs.sendMessage(tab.id, {
-      type: "GET_SAFE_TOKENS",
-    });
-
-    if (response && "tokens" in response) {
-      return response.tokens as TokenRecordSafe[];
-    }
-
-    return [];
-  } catch (error) {
-    console.log("Content script not ready:", error);
-    return [];
+    const stored = await chrome.storage.local.get(STORAGE_KEY);
+    const s = stored?.[STORAGE_KEY] as Partial<DashboardSettings> | undefined;
+    if (!s) return { ...DEFAULT_DASHBOARD };
+    return {
+      active: s.active !== false,
+      showWidget: s.showWidget !== false,
+      autoRedact: s.autoRedact !== false,
+      theme: s.theme === "light" || s.theme === "auto" ? s.theme : "dark",
+      domainWhitelist: Array.isArray(s.domainWhitelist)
+        ? s.domainWhitelist.filter((d): d is string => typeof d === "string")
+        : [],
+    };
+  } catch {
+    return { ...DEFAULT_DASHBOARD };
   }
 }
 
-/**
- * Wire the popup prompt to the simulated agent flow.
- */
-function wirePopupHandlers(handles: AgentUIHandles, signal: { cancelled: boolean }): void {
-  const promptStage = handles.root.querySelector("#rv-prompt-stage") as HTMLElement;
-  const processingStage = handles.root.querySelector("#rv-processing-stage") as HTMLElement;
-  const processingText = handles.root.querySelector("#rv-processing-text") as HTMLElement;
-  const results = handles.root.querySelector("#rv-results") as HTMLElement;
-  const sendBtn = handles.root.querySelector("#rv-send-btn") as HTMLButtonElement;
-  const promptInput = handles.root.querySelector("#rv-prompt-input") as HTMLTextAreaElement;
-  const processingSteps = handles.root.querySelector("#rv-processing-steps") as HTMLElement;
-  const closeBtn = handles.root.querySelector("#rv-close-btn") as HTMLButtonElement;
-
-  // Hide close button in popup (only needed in in-page panel)
-  closeBtn.style.display = "none";
-
-  function addStep(text: string, state: "completed" | "active" | "pending"): void {
-    const step = document.createElement("div");
-    step.className = `rv-processing-step ${state === "pending" ? "" : `rv-${state}`}`;
-    const icon = state === "completed" ? "✓" : state === "active" ? "◌" : "○";
-    step.innerHTML = `<span class="rv-processing-step-icon">${icon}</span><span>${text}</span>`;
-    processingSteps.appendChild(step);
+async function saveDashboard(settings: DashboardSettings): Promise<void> {
+  try {
+    await chrome.storage.local.set({ [STORAGE_KEY]: settings });
+  } catch {
+    /* ignore */
   }
+}
 
-  function reset(): void {
-    handles.reset();
-    promptStage.style.display = "block";
-    processingStage.style.display = "none";
-    results.style.display = "none";
-    processingSteps.innerHTML = "";
-  }
+document.addEventListener("DOMContentLoaded", async () => {
+  const $ = <T extends HTMLElement>(id: string): T => {
+    const el = document.getElementById(id);
+    if (!el) throw new Error(`Missing #${id}`);
+    return el as T;
+  };
 
-  async function startFlow(): Promise<void> {
-    const text = promptInput.value.trim();
-    if (!text) return;
+  // Element refs
+  const activeToggle = $<HTMLInputElement>("rv-active-toggle");
+  const showWidgetToggle = $<HTMLInputElement>("rv-show-widget");
+  const autoRedactToggle = $<HTMLInputElement>("rv-auto-redact");
+  const serverUrlInput = $<HTMLInputElement>("rv-server-url");
+  const testConnBtn = $<HTMLButtonElement>("rv-test-conn");
+  const testResult = $("rv-test-result");
+  const domainChips = $("rv-domain-chips");
+  const domainForm = $<HTMLFormElement>("rv-domain-form");
+  const domainInput = $<HTMLInputElement>("rv-domain-input");
+  const doneBtn = $<HTMLButtonElement>("rv-done-btn");
+  const statusLabel = $("rv-status-label");
+  const statusDot = document.querySelector(".rv-status-dot") as HTMLElement;
 
-    sendBtn.disabled = true;
-    promptInput.disabled = true;
-    promptStage.style.display = "none";
-    processingStage.style.display = "flex";
-    results.style.display = "block";
-    processingSteps.innerHTML = "";
+  // Load persisted state
+  const plannerConfig: PlannerConfig = await loadPlannerConfig();
+  const settings: DashboardSettings = await loadDashboard();
 
-    const tokens = await requestPrivacyStatus();
+  // ----- Hydrate UI -----
 
-    await runAgentFlow(
-      tokens,
-      {
-        onStageStart: (_stage, label, stepText) => {
-          processingText.textContent = label;
-          addStep(stepText, "active");
-        },
-        onStageComplete: (_stage) => {
-          const lastStep = processingSteps.lastElementChild as HTMLElement | null;
-          if (lastStep) {
-            lastStep.classList.remove("rv-active");
-            lastStep.classList.add("rv-completed");
-          }
-        },
-        onPrivacy: (t) => handles.showPrivacyStage(t),
-        onTokenization: (t) => handles.showTokenizationStage(t),
-        onSanitized: () => handles.showSanitizedStage(),
-        onAgent: () => handles.showAgentStage(),
-        onAction: () => {
-          const t = promptInput.value.toLowerCase();
-          let action = { type: "CLICK", target: "#submit-btn", confidence: 0.98 };
-          if (t.includes("fill") || t.includes("enter") || t.includes("type")) {
-            action = { type: "TYPE", target: "#full-name", confidence: 0.95 };
-          } else if (t.includes("cancel")) {
-            action = { type: "CLICK", target: "#cancel-btn", confidence: 0.99 };
-          } else if (t.includes("phone")) {
-            action = { type: "TYPE", target: "#phone", confidence: 0.94 };
-          } else if (t.includes("email")) {
-            action = { type: "TYPE", target: "#email", confidence: 0.97 };
-          } else if (t.includes("password")) {
-            action = { type: "TYPE", target: "#password", confidence: 0.93 };
-          }
-          handles.showActionStage(action);
-        },
-        onValidation: (passed, message) => {
-          handles.showValidationStage(passed, message);
-        },
-        onExecution: (executed, result) => {
-          handles.showExecutionStage(executed, result);
-        },
-        onDone: () => {
-          sendBtn.disabled = false;
-          promptInput.disabled = false;
-          handles.setStage("completed", "Completed");
-        },
-        onError: () => {
-          sendBtn.disabled = false;
-          promptInput.disabled = false;
-          handles.setStage("error", "Error");
-        },
-      },
-      signal
-    ).catch(() => {
-      sendBtn.disabled = false;
-      promptInput.disabled = false;
-    });
-  }
+  activeToggle.checked = settings.active;
+  showWidgetToggle.checked = settings.showWidget;
+  autoRedactToggle.checked = settings.autoRedact;
+  serverUrlInput.value =
+    plannerConfig.serverUrl || "http://127.0.0.1:8001";
 
-  sendBtn.addEventListener("click", () => {
-    startFlow().catch(console.error);
+  // Set the right routing pill as selected.
+  const backend: PlannerBackend = plannerConfig.backend || "auto";
+  document.querySelectorAll<HTMLInputElement>('input[name="rv-backend"]').forEach((r) => {
+    r.checked = r.value === backend;
   });
 
-  promptInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-      startFlow().catch(console.error);
+  // Theme
+  document.querySelectorAll<HTMLInputElement>('input[name="rv-theme"]').forEach((r) => {
+    r.checked = r.value === settings.theme;
+  });
+
+  // Domain chips
+  renderDomainChips(settings.domainWhitelist, domainChips, async (newList) => {
+    settings.domainWhitelist = newList;
+    await saveDashboard(settings);
+    setStatus("Settings saved");
+  });
+
+  // ----- Auto-save wiring -----
+
+  // Helper: persist planner config + show a brief "saved" hint.
+  let statusTimer: ReturnType<typeof setTimeout> | null = null;
+  function setStatus(text: string, kind: "ok" | "busy" | "error" = "ok"): void {
+    statusLabel.textContent = text;
+    statusDot.className = `rv-status-dot rv-${kind}`;
+    if (statusTimer) clearTimeout(statusTimer);
+    if (kind === "ok") {
+      statusTimer = setTimeout(() => {
+        statusLabel.textContent = "Settings saved automatically";
+        statusDot.className = "rv-status-dot rv-ok";
+      }, 1500);
+    }
+  }
+
+  async function persistPlanner(): Promise<void> {
+    const cfg: PlannerConfig = {
+      serverUrl: serverUrlInput.value.trim() || "http://127.0.0.1:8001",
+      onDeviceModel: plannerConfig.onDeviceModel,
+      backend,
+    };
+    await savePlannerConfig(cfg);
+    setStatus("Settings saved");
+  }
+
+  // Toggles
+  activeToggle.addEventListener("change", async () => {
+    settings.active = activeToggle.checked;
+    await saveDashboard(settings);
+    setStatus(settings.active ? "Agent enabled" : "Agent paused");
+  });
+
+  showWidgetToggle.addEventListener("change", async () => {
+    settings.showWidget = showWidgetToggle.checked;
+    await saveDashboard(settings);
+    // Tell any open content script to show/hide the widget.
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      for (const tab of tabs) {
+        if (tab.id !== undefined) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: "RV_SET_WIDGET_VISIBLE",
+            visible: settings.showWidget,
+          }).catch(() => undefined);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    setStatus(settings.showWidget ? "Widget will appear" : "Widget hidden");
+  });
+
+  autoRedactToggle.addEventListener("change", async () => {
+    settings.autoRedact = autoRedactToggle.checked;
+    await saveDashboard(settings);
+    setStatus(settings.autoRedact ? "Auto-redact on" : "Auto-redact off");
+  });
+
+  // Routing pills
+  document.querySelectorAll<HTMLInputElement>('input[name="rv-backend"]').forEach((r) => {
+    r.addEventListener("change", async () => {
+      if (r.checked) {
+        (plannerConfig as PlannerConfig).backend = r.value as PlannerBackend;
+        await persistPlanner();
+      }
+    });
+  });
+
+  // Server URL — debounced
+  let urlTimer: ReturnType<typeof setTimeout> | null = null;
+  serverUrlInput.addEventListener("input", () => {
+    if (urlTimer) clearTimeout(urlTimer);
+    urlTimer = setTimeout(() => {
+      void persistPlanner();
+    }, 500);
+  });
+
+  // Test connection
+  testConnBtn.addEventListener("click", async () => {
+    setStatus("Testing connection…", "busy");
+    testConnBtn.disabled = true;
+    testResult.textContent = "";
+    testResult.className = "rv-test-result";
+    try {
+      const url = serverUrlInput.value.trim() || "http://127.0.0.1:8001";
+      const result = await pingServer(url);
+      if (result.ok) {
+        const data = result.body as
+          | {
+              configured?: boolean;
+              model?: string;
+              providers?: Array<{ name: string; available: boolean }>;
+            }
+          | null;
+        const available = (data?.providers || []).filter((p) => p.available);
+        const isConfigured = data?.configured === true || available.length > 0;
+        if (isConfigured) {
+          const names = available.length
+            ? available.map((p) => p.name).join(", ")
+            : data?.model || "ready";
+          testResult.textContent = `✓ Server ready (${names})`;
+          testResult.className = "rv-test-result rv-ok";
+          setStatus("Server reachable", "ok");
+        } else {
+          testResult.innerHTML = `✗ Server reachable but no provider API key set. Add one in <code>server/.env</code>.`;
+          testResult.className = "rv-test-result rv-fail";
+          setStatus("No provider key on server", "error");
+        }
+      } else {
+        testResult.innerHTML = `✗ ${escapeHtml(result.error || `HTTP ${result.status}`)}.<br><small>Start the server: <code>cd server && source ../.venv/bin/activate && python -m uvicorn redactvision_server.main:app --port 8001</code></small>`;
+        testResult.className = "rv-test-result rv-fail";
+        setStatus("Server unreachable", "error");
+      }
+    } catch (e) {
+      testResult.textContent = `✗ ${e instanceof Error ? e.message : String(e)}`;
+      testResult.className = "rv-test-result rv-fail";
+      setStatus("Test failed", "error");
+    } finally {
+      testConnBtn.disabled = false;
     }
   });
+
+  // Domain whitelist
+  domainForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const raw = domainInput.value.trim().toLowerCase();
+    // Strip protocol / path — we only store bare hostnames.
+    const cleaned = raw
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .split("/")[0]
+      .trim();
+    if (!cleaned) return;
+    if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(cleaned) && cleaned !== "localhost") {
+      domainInput.focus();
+      domainInput.select();
+      setStatus("Invalid hostname", "error");
+      return;
+    }
+    if (settings.domainWhitelist.includes(cleaned)) {
+      domainInput.value = "";
+      return;
+    }
+    settings.domainWhitelist = [...settings.domainWhitelist, cleaned];
+    await saveDashboard(settings);
+    domainInput.value = "";
+    renderDomainChips(settings.domainWhitelist, domainChips, async (newList) => {
+      settings.domainWhitelist = newList;
+      await saveDashboard(settings);
+      setStatus("Settings saved");
+    });
+    setStatus("Domain added");
+  });
+
+  // Theme
+  document.querySelectorAll<HTMLInputElement>('input[name="rv-theme"]').forEach((r) => {
+    r.addEventListener("change", async () => {
+      if (r.checked) {
+        settings.theme = r.value as "dark" | "light" | "auto";
+        await saveDashboard(settings);
+        setStatus("Theme updated");
+      }
+    });
+  });
+
+  // Done button — close the popup.
+  doneBtn.addEventListener("click", () => {
+    window.close();
+  });
+});
+
+function renderDomainChips(
+  list: string[],
+  container: HTMLElement,
+  onChange: (newList: string[]) => Promise<void> | void
+): void {
+  container.innerHTML = "";
+  for (const domain of list) {
+    const chip = document.createElement("span");
+    chip.className = "rv-chip";
+    chip.innerHTML = `
+      <span>${escapeHtml(domain)}</span>
+      <button class="rv-chip-remove" type="button" aria-label="Remove ${escapeHtml(domain)}">×</button>
+    `;
+    const removeBtn = chip.querySelector(".rv-chip-remove") as HTMLButtonElement;
+    removeBtn.addEventListener("click", () => {
+      void onChange(list.filter((d) => d !== domain));
+    });
+    container.appendChild(chip);
+  }
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }

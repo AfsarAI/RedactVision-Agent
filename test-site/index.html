@@ -220,18 +220,59 @@
   </main>
 
   <script>
+    // Toast/result display — non-blocking so it doesn't freeze the agent flow.
+    (function () {
+      var resultEl = null;
+      function ensureResultEl() {
+        if (resultEl) return resultEl;
+        resultEl = document.createElement("div");
+        resultEl.id = "test-result";
+        resultEl.style.cssText = [
+          "position: fixed",
+          "left: 50%",
+          "bottom: 32px",
+          "transform: translateX(-50%)",
+          "background: #16a34a",
+          "color: white",
+          "padding: 12px 18px",
+          "border-radius: 10px",
+          "font-size: 14px",
+          "font-weight: 600",
+          "box-shadow: 0 8px 30px rgba(0,0,0,0.3)",
+          "z-index: 99999",
+          "opacity: 0",
+          "transition: opacity 0.2s",
+          "pointer-events: none"
+        ].join(";");
+        document.body.appendChild(resultEl);
+        return resultEl;
+      }
+      function showResult(msg, isError) {
+        var el = ensureResultEl();
+        el.textContent = msg;
+        el.style.background = isError ? "#dc2626" : "#16a34a";
+        el.style.opacity = "1";
+        clearTimeout(showResult._t);
+        showResult._t = setTimeout(function () {
+          el.style.opacity = "0";
+        }, 2500);
+      }
+      window.__rvShowResult = showResult;
+    })();
+
     document
       .getElementById("demo-form")
       .addEventListener("submit", function (event) {
         event.preventDefault();
-
-        alert("Test form submitted.");
+        if (window.__rvShowResult) window.__rvShowResult("✓ Test form submitted");
+        else alert("Test form submitted.");
       });
 
     document
       .getElementById("cancel-btn")
       .addEventListener("click", function () {
-        alert("Cancel clicked.");
+        if (window.__rvShowResult) window.__rvShowResult("✓ Cancel clicked");
+        else alert("Cancel clicked.");
       });
   </script>
 
