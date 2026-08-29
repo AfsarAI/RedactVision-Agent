@@ -1,0 +1,26 @@
+[project]
+name = "redactvision-server"
+version = "0.1.0"
+description = "RedactVision Agent - Privacy-preserving server-side reasoning"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+start-server = "redactvision_server.main:main"
+start-dev = "redactvision_server.main:dev_main"
+
+[tool.uvicorn]
+host = "127.0.0.1"
+port = 8000
+reload = true
