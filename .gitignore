@@ -14,6 +14,9 @@ node_modules/
 .env.*
 !.env.example
 
+# Claude Code local configuration / secrets
+.claude/
+
 # Logs
 *.log
 

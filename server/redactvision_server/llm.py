@@ -1,7 +1,7 @@
 """
 RedactVision Agent — Server-side LLM Planner
 
-Phase 7 / Phase 9+: Multi-Provider Fallback & Retry Loop.
+Bounded multi-provider fallback. NO infinite retry loop.
 
 All API keys are read from environment variables. None are hard-coded.
 See .env.example for required variables.
@@ -12,15 +12,23 @@ Privacy contract (CLAUDE.md invariants):
   - It returns a structured action; the client validates and executes.
 
 Priority chain (see multi_provider_llm.py):
-  1. Gemini  →  2. Groq  →  3. OpenRouter  →  4. NVIDIA NIM
-  →  5. OmniRoute  →  6. Hugging Face
+  1. Groq        (primary; fast, structured JSON)
+  2. OpenRouter  (secondary; free models only)
+  3. OmniRoute   (tertiary fallback)
 
-On any failure (429 / 500 / 503 / timeout / unavailable) the loop
-automatically backs off and tries the next provider. The loop is
-infinite — it only exits with a successful response or after 200
-internal attempts (configurable via LLM_MAX_ATTEMPTS).
+Removed providers (after live testing showed they were not viable
+for this agent workload): Google AI Studio (Gemini), NVIDIA NIM,
+Hugging Face Inference API.
 
-Existing exports preserved (backward-compatible):
+On failure:
+  - Within a single provider, retry ONCE on a retryable error
+    (rate limit, timeout, 5xx).
+  - On a non-retryable error (401, 404, 410, invalid request), move
+    to the next provider immediately.
+  - After all 3 providers have been tried, raise RuntimeError — the
+    orchestrator will never loop back to provider 1.
+
+Exports:
   plan_with_llm()   — main entry for the /llm/plan endpoint
   health()          — /llm/health status dict
   is_configured()   — True if at least one provider has a key
@@ -61,7 +69,7 @@ def _read_env_or_default(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
-DEFAULT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_MODEL = "groq/compound-mini"
 MAX_TOKENS = 400
 TEMPERATURE = 0.1
 REQUEST_TIMEOUT = 30.0
@@ -73,7 +81,7 @@ def _available_providers() -> list[dict]:
     """Return a list of provider status dicts for the /llm/health endpoint."""
     from .providers import PROVIDERS
     return [
-        {"name": p.name, "available": p.available()}
+        {"name": p.name, "available": p.available(), "models": p.models()}
         for p in PROVIDERS
     ]
 
@@ -87,29 +95,16 @@ def is_configured() -> bool:
 
 
 def health() -> dict:
-    """Return a status dict for /llm/health.
-
-    Backward-compatible: includes the legacy `model` and `api_url` keys
-    (used by the original test suite) plus the new multi-provider info.
-    """
+    """Return a status dict for /llm/health."""
     configured = is_configured()
-    # Primary provider info — new multi-provider module, but kept legacy keys.
-    primary_model = os.environ.get("LLM_MODEL") or os.environ.get("GROQ_MODEL", DEFAULT_MODEL)
-    primary_url = os.environ.get("LLM_API_URL") or os.environ.get(
-        "GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"
-    )
+    primary_model = os.environ.get("GROQ_MODEL") or DEFAULT_MODEL
     return {
-        # Legacy keys (kept for backward-compat with existing tests/clients)
         "configured": configured,
         "model": primary_model,
-        "api_url": primary_url,
-        # New multi-provider keys
-        "primary_model": primary_model,
-        "primary_api_url": primary_url,
+        "api_url": "https://api.groq.com/openai/v1/chat/completions",
         "providers": _available_providers(),
-        "backoff_seconds": float(os.environ.get("LLM_BACKOFF_SECONDS", "5.0")),
         "timeout_seconds": float(os.environ.get("LLM_TIMEOUT_SECONDS", "30.0")),
-        "max_attempts": int(os.environ.get("LLM_MAX_ATTEMPTS", "200")),
+        "retries_per_provider": int(os.environ.get("LLM_RETRIES_PER_PROVIDER", "1")),
     }
 
 
@@ -121,24 +116,22 @@ def plan_with_llm(
     Call the multi-provider LLM and return the parsed action dict plus
     the display label of the provider that actually answered.
 
-    The priority chain is handled by MultiProviderLLM.generate().
-    This function only:
-      1. Builds the messages from the sanitized event.
-      2. Calls the orchestrator (which loops until a provider succeeds).
-      3. Parses and validates the JSON response.
+    The priority chain is handled by MultiProviderLLM.generate(). It is
+    bounded — at most 3 providers × 2 attempts = 6 HTTP calls per request,
+    with a per-call timeout (LLM_TIMEOUT_SECONDS, default 30s). There
+    is no infinite retry loop.
 
     Returns:
-        (action_dict, provider_label) — e.g. ({"action":"click",...}, "Groq").
+        (action_dict, provider_label) — e.g. ({"action":"click",...}, "groq").
 
     Raises:
-        RuntimeError  — no provider succeeded after max attempts (or never configured).
+        RuntimeError  — every provider failed (caller converts to 502).
         ValueError    — the response could not be parsed as valid JSON.
     """
     if not is_configured():
         raise RuntimeError(
             "No LLM provider is configured. Set at least one of: "
-            "GOOGLE_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, "
-            "NVAPI_KEY / NVIDIA_API_KEY, OMNIROUTE_API_KEY, HF_API_KEY. "
+            "GROQ_API_KEY, OPENROUTER_API_KEY, OMNIROUTE_API_KEY. "
             "See .env.example."
         )
 
@@ -153,9 +146,11 @@ def plan_with_llm(
         {"role": "user", "content": build_user_prompt(sanitized_event.prompt or "", sanitized_dom, history)},
     ]
 
-    logger.info("LLM request → multi-provider chain (Gemini→Groq→OpenRouter→Nvidia→OmniRoute→HF)")
+    logger.info("LLM request → Groq → OpenRouter → OmniRoute (bounded)")
+
     llm = _get_llm()
     raw_text, provider_name = llm.generate(messages)
+
     logger.info("LLM response ← provider=%s (%.50s...)", provider_name, raw_text[:50])
 
     action = _parse_json(raw_text)

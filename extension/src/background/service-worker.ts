@@ -22,8 +22,18 @@ chrome.runtime.onInstalled.addListener(() => {
   console.log("RedactVision Agent: Installed successfully.");
 });
 
-/** Hard ceiling for any single server call. */
-const SERVER_TIMEOUT_MS = 5_000;
+/**
+ * Hard ceiling for any single server call.
+ *
+ * The server's `/llm/plan` may need to walk its multi-provider
+ * fallback chain (Gemini → Groq → OpenRouter → NVIDIA → OmniRoute →
+ * HF) and on the FIRST cycle of discovery-failed providers the
+ * entire chain can take 30–60 s before the server returns 502
+ * `llm_unavailable`. We therefore give the client 120 s to wait
+ * for a real response (success or structured failure), and treat
+ * anything longer than that as a transport-level problem.
+ */
+const SERVER_TIMEOUT_MS = 120_000;
 
 chrome.runtime.onMessage.addListener(
   (message: { type?: string } & Record<string, unknown>, _sender, sendResponse) => {
@@ -112,10 +122,27 @@ async function handlePlan(msg: RVPlanMessage): Promise<unknown> {
     clearTimeout(timer);
 
     if (!resp.ok) {
+      // Surface structured error bodies (llm_not_configured, etc.) to the client.
+      let errorBody: { action: null; source: "error"; code?: string; message?: string } | null = null;
+      try {
+        const errJson = (await resp.json()) as {
+          code?: string;
+          message?: string;
+          error?: string;
+        };
+        errorBody = {
+          action: null,
+          source: "error",
+          code: errJson.code,
+          message: errJson.message || errJson.error,
+        };
+      } catch {
+        /* not JSON */
+      }
       return {
         ok: false,
         status: resp.status,
-        body: null,
+        body: errorBody as unknown as { action: unknown; source: string } | null,
         error: `HTTP ${resp.status}`,
       };
     }

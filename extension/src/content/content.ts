@@ -29,7 +29,7 @@ import {
   PlannerConfig,
 } from "../llm/llm-planner";
 
-console.log("RedactVision Agent: Content Script Loaded");
+console.log("[RedactVision] Content script initialized");
 
 /* ============================================================
  *  Local perception + privacy firewall (run once on page load)
@@ -40,16 +40,27 @@ console.log("RedactVision Agent: Content Script Loaded");
 const privacyFirewall = new PrivacyFirewall();
 const sanitizedPageDOM = privacyFirewall.sanitizePage(extractPageDOM());
 
-console.log("RedactVision Agent: Sanitized Page DOM");
-console.log(sanitizedPageDOM);
-console.log(
-  "RedactVision Agent: Local Token Count",
-  privacyFirewall.getLocalTokenMap().length
-);
-console.log(
-  "RedactVision Agent: Local Token Map",
-  privacyFirewall.getLocalTokenMap()
-);
+console.log("[RedactVision] Page perception completed");
+console.log("[RedactVision] Privacy scan completed");
+const summary = privacyFirewall.getLocalTokenMap();
+console.log(`[RedactVision] Sensitive regions detected: ${summary.length}`);
+console.log("[RedactVision] Context sanitized");
+console.log("[RedactVision] Sending sanitized context to agent");
+console.log("[RedactVision] Agent reasoning via server LLM");
+
+/* ============================================================
+ *  Background unified pipeline
+ *  ----------------------------------------------------------------
+ *  An earlier prototype used to spin up `runUnifiedPipeline()` here
+ *  on a 1-second timer to demonstrate the privacy flow. That demo:
+ *    - was unrelated to the chat agent,
+ *    - spammed the console with a hardcoded "click #submit" run,
+ *    - was the second competing pipeline called out in the
+ *      architecture correction.
+ *  The chat agent runs its own perception + privacy pipeline
+ *  inside `runPrompt()`; no second pipeline is started here.
+ * ============================================================ */
+
 
 /* ============================================================
  *  Stylesheet injection
@@ -104,12 +115,12 @@ async function injectChatStyles(): Promise<void> {
   })();
   if (ctxValid) {
     try {
-      const cssUrl = chrome.runtime.getURL("ui/chat-ui.css");
+      const cssUrl = chrome.runtime.getURL("dist/ui/chat-ui.css");
       const resp = await fetch(cssUrl);
       if (resp.ok) css = await resp.text();
     } catch (e) {
       console.warn(
-        "[RedactVision] Could not load chat-ui.css from extension bundle, using bundled fallback:",
+        "[RedactVision] Could not load chat-ui.css from extension bundle, using fallback styles:",
         e instanceof Error ? e.message : e
       );
     }
@@ -218,15 +229,11 @@ async function openInPagePanelAsync(): Promise<void> {
     {
       onActivity: (activity) => ui.appendActivity(activity),
       onPlanResult: (result) => {
-        // The planner may return undefined (e.g. pure error). Default to
-        // a label derived from the source.
-        const label =
-          result.backendLabel ||
-          (result.source === "server-llm"
-            ? "Server"
-            : result.source === "fallback-rules"
-            ? "Local rules"
-            : "—");
+        // The planner is the server LLM. If it didn't return a label,
+        // show a generic "Server" pill so the user knows the action
+        // path. When the planner is offline, the label will already
+        // say "Server (offline)" from the planner itself.
+        const label = result.backendLabel || (result.source === "server-llm" ? "Server" : "—");
         ui.setBackend(label);
       },
     },
@@ -242,17 +249,67 @@ async function openInPagePanelAsync(): Promise<void> {
 
   ui.setStatus("ready", "Ready");
   ui.clearConversation();
-  ui.setBackend("Local"); // initial state, replaced on first plan
+  ui.setBackend("Server"); // replaced with the active LLM provider on first plan
 
   ui.onSend(async (text) => {
     ui.setInputValue("");
     ui.setInputEnabled(false);
     ui.setStatus("thinking", "Working…");
     try {
-      await session.runPrompt(text);
+      const outcome = await session.runPrompt(text);
+      const finalPhase = outcome.phase;
+      const isCompleted = finalPhase === "completed";
+      const isFailed = finalPhase === "failed" || finalPhase === "max_iterations_reached" || finalPhase === "cancelled";
+      const isOffline = finalPhase === "offline";
+      const uiPhase = isCompleted ? "completed" : (isFailed || isOffline) ? "error" : "thinking";
       // After the prompt, re-summarize (page state may have changed).
       ui.setRedactionSummary(session.getRedactionSummary(false));
-      ui.setStatus("completed", "Completed");
+      // Render the polished end-of-task summary card.
+      const summaryPhase = isCompleted
+        ? "completed"
+        : isOffline
+        ? "offline"
+        : isFailed
+        ? finalPhase === "cancelled"
+          ? "cancelled"
+          : finalPhase === "max_iterations_reached"
+          ? "max_iterations_reached"
+          : "failed"
+        : "completed";
+      ui.showSummary({
+        phase: summaryPhase as "completed" | "failed" | "max_iterations_reached" | "cancelled" | "offline",
+        message: isCompleted
+          ? "Task completed successfully"
+          : isOffline
+          ? "Server agent offline"
+          : isFailed
+          ? finalPhase === "cancelled"
+            ? "Cancelled by user"
+            : finalPhase === "max_iterations_reached"
+            ? "Agent could not confirm completion within the safety limit"
+            : "Task could not be completed"
+          : "Stopped",
+        reason: outcome.reason,
+        iterations: outcome.iterations,
+        actionsPlanned: outcome.actionsPlanned,
+        actionsExecuted: outcome.actionsExecuted,
+        durationMs: outcome.durationMs,
+        privacy: session.getRedactionSummary(false),
+      });
+      ui.setStatus(
+        uiPhase,
+        isCompleted
+          ? "Completed"
+          : isOffline
+          ? "Server offline"
+          : isFailed
+          ? finalPhase === "cancelled"
+            ? "Cancelled"
+            : finalPhase === "max_iterations_reached"
+            ? "Stopped"
+            : "Failed"
+          : "Working…"
+      );
     } catch (err) {
       ui.setStatus("error", "Error");
       console.error("[ContentScript] Agent error:", err);

@@ -1,29 +1,30 @@
 """
-RedactVision Agent — Multi-Provider Fallback & Retry Loop Mechanism
+RedactVision Agent — Bounded multi-provider LLM fallback
 
-Strict priority chain:
-  1. Gemini (Google AI Studio)
-  2. Groq
-  3. OpenRouter (free-model iteration)
-  4. NVIDIA NIM
-  5. OmniRoute
-  6. Hugging Face Inference API
+Strict priority order, NO infinite retry loop:
 
-If ALL fail: configurable backoff (default 5.0 s) and restart from Priority 1.
-This loop runs infinitely until a response is received.
+    Groq (primary)
+        ↓ on hard failure
+    OpenRouter (secondary)
+        ↓ on hard failure
+    OmniRoute (tertiary)
+        ↓ on hard failure
+    FAILED (clean error, no further attempts)
 
-Important privacy notes (CLAUDE.md invariants):
-- No provider adapter receives the local token map.
-- Only sanitized DOM / messages are transmitted.
-- Errors are logged but never contain raw PII.
-- No API keys are embedded in this file; they come from ENV only.
+Within a single provider, we may retry ONCE on a retryable error
+(rate limit, timeout, 5xx). On a non-retryable error (401, 404, 410,
+invalid request), we move to the next provider immediately.
+
+This is the deliberate opposite of an infinite-retry loop: a single
+/llm/plan HTTP request can attempt at most 3 providers × 2 calls = 6
+HTTP calls before giving up. The orchestrator will never loop back
+to provider 1 after provider 3 has been tried.
 """
 from __future__ import annotations
 
-import time
 import os
 import logging
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from .providers import PROVIDERS, Provider
 
@@ -32,131 +33,110 @@ logger = logging.getLogger("redactvision_server.multi_provider_llm")
 
 class MultiProviderLLM:
     """
-    Unified wrapper over 6 LLM providers with strict priority
-    and an infinite retry/backoff loop.
+    Sequential provider chain. Bounded by design.
     """
 
     def __init__(
         self,
         providers: Optional[List[Provider]] = None,
-        backoff_seconds: float = 5.0,
-        max_retries_per_provider: int = 1,
         timeout_per_call: float = 30.0,
+        max_retries_per_provider: int = 1,
     ):
-        self.providers = providers or PROVIDERS
-        self.backoff = float(os.environ.get("LLM_BACKOFF_SECONDS", backoff_seconds))
+        self.providers = providers if providers is not None else list(PROVIDERS)
         self.timeout = float(os.environ.get("LLM_TIMEOUT_SECONDS", timeout_per_call))
-        self.max_retries_per_provider = max_retries_per_provider
+        # On a retryable error within one provider, retry at most N times
+        # before moving to the next provider. Default 1 means: try once,
+        # if retryable, try once more, then move on.
+        self.max_retries_per_provider = int(os.environ.get(
+            "LLM_RETRIES_PER_PROVIDER", str(max_retries_per_provider)
+        ))
 
-    def generate_llm_response(self, prompt: str) -> tuple[str, str]:
+    def generate(self, messages: list[dict]) -> Tuple[str, str]:
         """
-        Try providers sequentially in strict priority order.
-        Returns (response_text, provider_name_that_succeeded).
+        Try providers in strict priority order. Bounded — never loops
+        back to provider 1 after provider N has been tried.
 
-        Raises RuntimeError if an unrecoverable state occurs
-        (should not normally happen because of the infinite loop).
+        Returns:
+            (response_text, provider_name_that_answered)
+
+        Raises:
+            RuntimeError — every provider was unavailable or returned
+                a non-retryable error. The error message enumerates
+                which providers were tried and why each failed.
         """
-        # For planner-style LLM interaction we wrap the user prompt in messages.
-        # The caller passes a text prompt (e.g. sanitized user task); we wrap it.
-        messages = [
-            {"role": "system", "content": "You are RedactVision Agent. Return structured JSON actions only."},
-            {"role": "user", "content": prompt},
-        ]
-        return self.generate(messages)
+        attempts: list[str] = []  # human-readable audit trail
 
-    def generate(self, messages: list[dict]) -> tuple[str, str]:
-        """
-        The core retry loop.
-        """
-        # Safety guard: never loop more than 200 attempts (approx 1000 s at 5 s backoff)
-        # before forcing an exception — protects against runaway loops in production.
-        # In practice the loop is intended to be infinite; this guard is a fail-safe.
-        max_total_attempts = int(os.environ.get("LLM_MAX_ATTEMPTS", "200"))
-        attempt = 0
-        while True:
-            attempt += 1
-            for provider in self.providers:
-                if not provider.available():
-                    logger.debug("Provider %s unavailable — skipping", provider.name)
-                    continue
+        for provider in self.providers:
+            if not provider.available():
+                attempts.append(f"{provider.name}: unavailable (no key)")
+                logger.info("Provider %s unavailable — skipping", provider.name)
+                continue
 
-                # Attempt this provider
-                for retry in range(self.max_retries_per_provider):
-                    try:
-                        text, err = provider.call(messages, timeout=self.timeout)
-                    except Exception as exc:
-                        # Defensive: provider.call should catch its own exceptions,
-                        # but we guard against unexpected crashes.
-                        text, err = "", f"Unexpected provider crash ({provider.name}): {exc}"
+            for attempt_idx in range(self.max_retries_per_provider + 1):
+                try:
+                    text, err = provider.call(messages, timeout=self.timeout)
+                except Exception as exc:
+                    # Defensive: provider.call should catch its own
+                    # exceptions, but a crash here must not loop.
+                    text, err = "", f"unexpected provider crash: {exc}"
 
-                    if text and not err:
-                        logger.info(
-                            "LLM success — provider=%s attempt=%d retry=%d",
-                            provider.name,
-                            attempt,
-                            retry,
-                        )
-                        return text, provider.name
-
-                    # Failure path
-                    logger.warning(
-                        "LLM failure — provider=%s attempt=%d retry=%d error=%s",
-                        provider.name,
-                        attempt,
-                        retry,
-                        err or "empty response",
+                if text and not err:
+                    logger.info(
+                        "LLM success — provider=%s attempt=%d",
+                        provider.name, attempt_idx + 1,
                     )
+                    return text, provider.name
 
-                    # For rate-limit errors (429) we don't immediately retry the same provider
-                    # within the inner retry; the outer loop's backoff handles it.
-                    # If it was just a transient error, we break out to backoff.
-                    # If it was a non-transient failure (401, bad payload), we still
-                    # attempt the next provider — but don't spam retries.
+                # Failure path
+                is_retryable = bool(err) and err.upper().startswith("RETRYABLE:")
+                attempts.append(f"{provider.name}: {err}")
 
-                    # Small intra-provider delay on retryable errors
-                    retryable = ("429" in (err or "") or "503" in (err or "") or "timeout" in (err or ""))
-                    if retry < self.max_retries_per_provider - 1 and retryable:
-                        delay = 0.5 * (retry + 1)
-                        logger.info("Retrying %s in %.1fs (retryable error)", provider.name, delay)
-                        time.sleep(delay)
+                if is_retryable and attempt_idx < self.max_retries_per_provider:
+                    logger.warning(
+                        "LLM retryable failure — provider=%s attempt=%d/%d error=%s",
+                        provider.name, attempt_idx + 1, self.max_retries_per_provider + 1, err,
+                    )
+                    continue  # retry same provider
 
-            # All providers exhausted — backoff and restart from Priority 1
-            logger.error(
-                "All %d providers failed on attempt %d. Backing off %.1fs before restart...",
-                len(self.providers),
-                attempt,
-                self.backoff,
-            )
-            if attempt >= max_total_attempts:
-                raise RuntimeError(
-                    f"LLM multi-provider loop exceeded max attempts ({max_total_attempts}). "
-                    "No provider returned a response. Check API keys and network."
+                # Non-retryable, or out of retries on this provider
+                logger.warning(
+                    "LLM failure — provider=%s attempt=%d error=%s — moving to next provider",
+                    provider.name, attempt_idx + 1, err,
                 )
-            time.sleep(self.backoff)
-            # After backoff we naturally restart from provider 1 (Gemini)
+                break  # move to next provider
+
+        # All providers exhausted — bounded failure
+        summary = " | ".join(attempts) if attempts else "no providers were even attempted"
+        logger.error("LLM chain failed: %s", summary)
+        raise RuntimeError(
+            f"All configured LLM providers failed. {summary}"
+        )
 
 
 # ------------------------------------------------------------------
-# Convenience singleton / function interface
+# Singleton accessor
 # ------------------------------------------------------------------
 _default_llm: Optional[MultiProviderLLM] = None
 
 
-def get_llm(config_backoff: Optional[float] = None) -> MultiProviderLLM:
-    """Lazy singleton — avoids creating a new loop on every import."""
+def get_llm() -> MultiProviderLLM:
     global _default_llm
     if _default_llm is None:
-        _default_llm = MultiProviderLLM(backoff_seconds=config_backoff or 5.0)
+        _default_llm = MultiProviderLLM()
     return _default_llm
 
 
-def generate_llm_response(prompt: str, backoff_seconds: float = 5.0) -> tuple[str, str]:
+def generate_llm_response(prompt: str) -> Tuple[str, str]:
     """
-    Unified wrapper function requested in spec.
-    Tries providers in priority order with infinite retry/backoff loop.
+    Convenience wrapper for ad-hoc LLM calls (not the /llm/plan
+    planning flow, which goes through llm.plan_with_llm).
 
-    Returns: (response_text, provider_name_used)
-    Raises: RuntimeError only if the absolute safety cap is exceeded.
+    Returns: (response_text, provider_name)
+    Raises: RuntimeError if every provider fails.
     """
-    llm = get_llm(config_backoff=backoff_seconds)
-    return llm.generate_llm_response(prompt)
+    llm = get_llm()
+    messages = [
+        {"role": "system", "content": "You are RedactVision Agent. Return structured JSON actions only."},
+        {"role": "user", "content": prompt},
+    ]
+    return llm.generate(messages)
