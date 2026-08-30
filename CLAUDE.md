@@ -17,6 +17,18 @@ npm run typecheck        # tsc --noEmit (fast, no emit)
 
 Build outputs to `extension/dist/` (content/content.js, background/service-worker.js, popup/popup.js, ui/chat-ui.css). Load unpacked in Chrome (`chrome://extensions`) from `extension/`.
 
+#### Source of truth vs. build output — DO NOT hand-edit `dist/`
+
+- **`extension/src/`** is the **source of truth** and is tracked by git.
+- **`extension/dist/`** is **build output** and is **gitignored** (`.gitignore` → `extension/dist/`). It is **never committed / pushed to GitHub**.
+- `npm run build` regenerates `dist/` entirely from `src/` (typecheck → esbuild → `copy:assets` copies `src/ui/chat-ui.css` → `dist/ui/` and `dist/popup/`).
+
+**Rules (MANDATORY):**
+1. Always edit **`src/`** files (TS, CSS, HTML), never `dist/` directly. Any hand-edit to `dist/` is wiped on the next build and is invisible to teammates.
+2. After changing any `src/` file, run `cd extension && npm run build` so the change lands in `dist/` and the running extension actually picks it up.
+3. Because `dist/` is gitignored, a teammate who clones the repo **must run `npm install && npm run build`** locally to get a working `dist/` before loading the extension.
+4. Verify you are editing tracked source with `git ls-files extension/` — a path that isn't listed is generated output, not source.
+
 ### Server (FastAPI + multi-provider LLM)
 
 ```bash

@@ -888,6 +888,8 @@
 .rv-input:focus {
   border-color: var(--rv-border-strong);
   box-shadow: 0 0 0 3px rgba(91, 107, 255, 0.15);
+  /* Explicit dark background prevents host-page CSS bleed (e.g. test-site input:focus{background:white}) */
+  background: rgba(15, 23, 42, 0.85);
 }
 .rv-input:disabled {
   opacity: 0.5;
