@@ -25,7 +25,6 @@ import {
   loadPlannerConfig,
   savePlannerConfig,
   PlannerConfig,
-  PlannerBackend,
 } from "../llm/llm-planner";
 import { pingServer } from "../llm/extension-bridge";
 
@@ -107,16 +106,11 @@ document.addEventListener("DOMContentLoaded", async () => {
   serverUrlInput.value =
     plannerConfig.serverUrl || "http://127.0.0.1:8001";
 
-  // Set the right routing pill as selected.
-  const backend: PlannerBackend = plannerConfig.backend || "auto";
-  document.querySelectorAll<HTMLInputElement>('input[name="rv-backend"]').forEach((r) => {
-    r.checked = r.value === backend;
-  });
-
   // Theme
   document.querySelectorAll<HTMLInputElement>('input[name="rv-theme"]').forEach((r) => {
     r.checked = r.value === settings.theme;
   });
+  applyPopupTheme(settings.theme);
 
   // Domain chips
   renderDomainChips(settings.domainWhitelist, domainChips, async (newList) => {
@@ -145,53 +139,54 @@ document.addEventListener("DOMContentLoaded", async () => {
     const cfg: PlannerConfig = {
       serverUrl: serverUrlInput.value.trim() || "http://127.0.0.1:8001",
       onDeviceModel: plannerConfig.onDeviceModel,
-      backend,
+      backend: "server",
     };
     await savePlannerConfig(cfg);
     setStatus("Settings saved");
+  }
+
+  /** Push updated settings to every open content script. */
+  async function broadcastSettingsUpdate(): Promise<void> {
+    try {
+      const tabs = await chrome.tabs.query({});
+      for (const tab of tabs) {
+        if (tab.id !== undefined) {
+          chrome.tabs.sendMessage(tab.id, { type: "RV_SETTINGS_UPDATED" }).catch(() => undefined);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Apply the theme to the popup itself (body class → CSS vars). */
+  function applyPopupTheme(theme: "dark" | "light" | "auto"): void {
+    const light =
+      theme === "light" ||
+      (theme === "auto" && window.matchMedia("(prefers-color-scheme: light)").matches);
+    document.body.classList.toggle("rv-light", light);
   }
 
   // Toggles
   activeToggle.addEventListener("change", async () => {
     settings.active = activeToggle.checked;
     await saveDashboard(settings);
+    await broadcastSettingsUpdate();
     setStatus(settings.active ? "Agent enabled" : "Agent paused");
   });
 
   showWidgetToggle.addEventListener("change", async () => {
     settings.showWidget = showWidgetToggle.checked;
     await saveDashboard(settings);
-    // Tell any open content script to show/hide the widget.
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      for (const tab of tabs) {
-        if (tab.id !== undefined) {
-          chrome.tabs.sendMessage(tab.id, {
-            type: "RV_SET_WIDGET_VISIBLE",
-            visible: settings.showWidget,
-          }).catch(() => undefined);
-        }
-      }
-    } catch {
-      /* ignore */
-    }
+    await broadcastSettingsUpdate();
     setStatus(settings.showWidget ? "Widget will appear" : "Widget hidden");
   });
 
   autoRedactToggle.addEventListener("change", async () => {
     settings.autoRedact = autoRedactToggle.checked;
     await saveDashboard(settings);
+    await broadcastSettingsUpdate();
     setStatus(settings.autoRedact ? "Auto-redact on" : "Auto-redact off");
-  });
-
-  // Routing pills
-  document.querySelectorAll<HTMLInputElement>('input[name="rv-backend"]').forEach((r) => {
-    r.addEventListener("change", async () => {
-      if (r.checked) {
-        (plannerConfig as PlannerConfig).backend = r.value as PlannerBackend;
-        await persistPlanner();
-      }
-    });
   });
 
   // Server URL — debounced
@@ -286,6 +281,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (r.checked) {
         settings.theme = r.value as "dark" | "light" | "auto";
         await saveDashboard(settings);
+        applyPopupTheme(settings.theme);
+        await broadcastSettingsUpdate();
         setStatus("Theme updated");
       }
     });

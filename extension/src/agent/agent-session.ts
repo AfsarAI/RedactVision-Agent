@@ -108,6 +108,7 @@ export class AgentSession {
   private llmPlanner: LLMPlanner;
   private cancelled = false;
   private maxIterations: number;
+  private lastSanitized: SanitizedPageDOM | null = null;
 
   constructor(
     callbacks: AgentSessionCallbacks = {},
@@ -127,6 +128,37 @@ export class AgentSession {
 
   setPlannerConfig(config: PlannerConfig): void {
     this.llmPlanner.setConfig(config);
+  }
+
+  /** Wire the popup's "Auto-redact" toggle to the firewall. */
+  setAutoRedact(enabled: boolean): void {
+    this.privacyFirewall.setEnabled(enabled);
+  }
+
+  /**
+   * Sanitized-data snapshot for the UI "View details" panel.
+   * Original values are MASKED — this is safe to render locally and
+   * shows the user exactly what the server is allowed to see.
+   */
+  getSanitizedData(): {
+    url: string;
+    title: string;
+    elementCount: number;
+    autoRedact: boolean;
+    tokens: Array<{ token: string; type: string; masked: string }>;
+  } {
+    const tokens = this.privacyFirewall.getLocalTokenMap().map((r) => ({
+      token: r.token,
+      type: r.type,
+      masked: maskSensitiveValue(r.originalValue),
+    }));
+    return {
+      url: this.lastSanitized?.url || "",
+      title: this.lastSanitized?.title || "",
+      elementCount: this.lastSanitized?.elements.length || 0,
+      autoRedact: this.privacyFirewall.isEnabled(),
+      tokens,
+    };
   }
 
   setMaxIterations(n: number): void {
@@ -187,7 +219,14 @@ export class AgentSession {
     const startedAt = performance.now();
     this.cancelled = false;
 
-    // Echo user message
+    // PRIVACY: the prompt itself may contain raw PII ("fill email
+    // abc@gmail.com"). Tokenize it BEFORE it reaches any server-bound
+    // path (planner + action history). Without this, providers with
+    // content moderation (e.g. OpenRouter) reject the request and the
+    // agent shows "offline" (HTTP 502 llm_unavailable).
+    prompt = this.privacyFirewall.sanitizeFreeText(prompt);
+
+    // Echo user message (tokenized form — visible proof of redaction)
     this.push({ kind: "user", text: prompt });
 
     // Per-prompt state.
@@ -228,6 +267,7 @@ export class AgentSession {
       }
       const rawDOM = extractPageDOM();
       const sanitizedDOM = this.privacyFirewall.sanitizePage(rawDOM);
+      this.lastSanitized = sanitizedDOM;
 
       // 2. Privacy processing (only narrate on the first iteration)
       if (iteration === 1) {
@@ -559,6 +599,19 @@ function displayValue(v: string): string {
   if (/^\[[A-Z_]+_\d+\]$/.test(v)) return v; // looks like a token
   if (v.length > 40) return v.slice(0, 37) + "…";
   return v;
+}
+
+/**
+ * Mask a sensitive value for LOCAL display in the details panel.
+ * Keeps the first 2 and last 1 characters so the user can recognize
+ * which value a token refers to, without exposing the full value.
+ */
+function maskSensitiveValue(v: string): string {
+  if (v.length <= 4) return "•".repeat(v.length);
+  const head = v.slice(0, 2);
+  const tail = v.slice(-1);
+  const middle = "•".repeat(Math.min(v.length - 3, 10));
+  return `${head}${middle}${tail}`;
 }
 
 function buildPlannedDetail(action: PlannedAction, planResult: PlannerResult): string {

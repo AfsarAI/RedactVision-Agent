@@ -57,30 +57,12 @@
         </div>
       </section>
 
-      <!-- ===== Reasoning Engine ===== -->
+      <!-- ===== Server Connection ===== -->
       <section class="rv-section">
-        <div class="rv-section-label">Reasoning engine</div>
-        <div class="rv-pill-group" role="radiogroup" aria-label="Reasoning engine">
-          <label class="rv-pill" data-value="auto">
-            <input type="radio" name="rv-backend" value="auto" checked />
-            <span class="rv-pill-name">Auto</span>
-            <span class="rv-pill-hint">Smart fallback</span>
-          </label>
-          <label class="rv-pill" data-value="server">
-            <input type="radio" name="rv-backend" value="server" />
-            <span class="rv-pill-name">Server</span>
-            <span class="rv-pill-hint">LLM only</span>
-          </label>
-          <label class="rv-pill" data-value="on-device">
-            <input type="radio" name="rv-backend" value="on-device" />
-            <span class="rv-pill-name">On-device</span>
-            <span class="rv-pill-hint">Private</span>
-          </label>
-          <label class="rv-pill" data-value="local">
-            <input type="radio" name="rv-backend" value="local" />
-            <span class="rv-pill-name">Local rules</span>
-            <span class="rv-pill-hint">Offline</span>
-          </label>
+        <div class="rv-section-label">Server connection</div>
+        <div class="rv-section-detail">
+          The server-side LLM is the only reasoning engine. It plans actions;
+          your browser executes them locally.
         </div>
 
         <div class="rv-field" id="rv-server-field">

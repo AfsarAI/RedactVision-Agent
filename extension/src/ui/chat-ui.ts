@@ -68,6 +68,25 @@ export interface ChatUIHandles {
   showSummary(summary: TaskSummary): void;
   /** Reset the card to a clean state (also hides any prior summary). */
   resetConversation(): void;
+  /** Latest sanitized-data snapshot for the details panel. */
+  setSanitizedData(data: SanitizedDataSnapshot): void;
+  /** Apply dark / light / auto theme to the card. */
+  applyTheme(theme: "dark" | "light" | "auto"): void;
+  /** Sync the quick-settings auto-redact toggle with stored state. */
+  setAutoRedactState(enabled: boolean): void;
+  /** Wire the in-card theme toggle (footer moon button / quick settings). */
+  onThemeToggle(handler: (next: "dark" | "light") => void): void;
+  /** Wire the quick-settings auto-redact toggle. */
+  onAutoRedactChange(handler: (enabled: boolean) => void): void;
+}
+
+/** Sanitized-data snapshot rendered in the details panel. */
+export interface SanitizedDataSnapshot {
+  url: string;
+  title: string;
+  elementCount: number;
+  autoRedact: boolean;
+  tokens: Array<{ token: string; type: string; masked: string }>;
 }
 
 /** Outcome of a single user prompt — drives the summary card. */
@@ -98,6 +117,13 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   const minimizeBtn = root.querySelector("#rv-minimize-btn") as HTMLElement;
   const closeBtn = root.querySelector("#rv-close-btn") as HTMLElement;
   const dragHandle = root.querySelector("[data-rv-drag-handle]") as HTMLElement;
+  const statusbarDot = root.querySelector("#rv-statusbar-dot") as HTMLElement;
+  const statusbarLabel = root.querySelector("#rv-statusbar-label") as HTMLElement;
+  const settingsBtn = root.querySelector("#rv-settings-btn") as HTMLElement;
+  const themeBtn = root.querySelector("#rv-theme-btn") as HTMLElement;
+  const infoBtn = root.querySelector("#rv-info-btn") as HTMLElement;
+  const quickSettings = root.querySelector("#rv-quick-settings") as HTMLElement;
+  const qsAutoRedact = root.querySelector("#rv-qs-autoredact") as HTMLInputElement;
 
   let sendHandler: ((text: string) => void) | null = null;
   let cancelHandler: (() => void) | null = null;
@@ -105,24 +131,58 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   let minimizeHandler: (() => void) | null = null;
   let dragEndHandler: ((offset: { dx: number; dy: number }) => void) | null = null;
 
+  // ---- Details panel state ----
+  let sanitizedData: SanitizedDataSnapshot | null = null;
+  let detailsPanel: HTMLElement | null = null;
+  let detailsTab: "timeline" | "data" = "timeline";
+  let summaryToggleBtn: HTMLButtonElement | null = null;
+
+  // ---- Theme / quick-settings state ----
+  let currentTheme: "dark" | "light" = "dark";
+  let themeToggleHandler: ((next: "dark" | "light") => void) | null = null;
+  let autoRedactHandler: ((enabled: boolean) => void) | null = null;
+
   // ---- Composer ----
 
+  function submitText(text: string): void {
+    const t = text.trim();
+    if (!t) return;
+    input.value = "";
+    input.style.height = "auto";
+    sendHandler?.(t);
+  }
+
   sendBtn.addEventListener("click", () => {
-    const text = input.value.trim();
-    if (!text) return;
-    sendHandler?.(text);
+    submitText(input.value);
   });
 
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      const text = input.value.trim();
-      if (text) sendHandler?.(text);
+      submitText(input.value);
     }
   });
 
+  // Auto-grow: the box stays one line tall and only grows when the
+  // user writes a longer multi-line task (capped at ~4 lines).
+  const autoGrow = () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 76) + "px";
+  };
+  input.addEventListener("input", autoGrow);
+
   cancelBtn.addEventListener("click", () => {
     cancelHandler?.();
+  });
+
+  // Suggestion chips (empty state) — clicking one submits the task.
+  conversation.addEventListener("click", (e) => {
+    const chip = (e.target as HTMLElement).closest?.(
+      ".rv-chip-suggest"
+    ) as HTMLElement | null;
+    if (chip?.dataset.suggest) {
+      submitText(chip.dataset.suggest);
+    }
   });
 
   // ---- Header buttons ----
@@ -437,6 +497,11 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   ): void {
     statusDot.className = `rv-chat-dot rv-${state}`;
     headerStatus.textContent = label;
+    // Mirror the status into the footer statusbar pill.
+    if (statusbarDot && statusbarLabel) {
+      statusbarDot.className = `rv-statusbar-dot rv-${state}`;
+      statusbarLabel.textContent = label;
+    }
     if (state === "thinking") {
       privacyBar.classList.add("rv-active");
     } else {
@@ -605,27 +670,134 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       conversation.appendChild(card);
     }
 
-    // Wire the "View details" toggle to scroll to the bottom of
-    // the conversation (where the full activity timeline lives).
+    // Wire the "View details" toggle to open the full-screen details
+    // panel (timeline + sanitized data) inside the card.
     const toggle = card.querySelector("[data-summary-toggle]") as HTMLButtonElement;
+    summaryToggleBtn = toggle;
     toggle.addEventListener("click", () => {
-      const open = toggle.classList.toggle("rv-summary-toggle-open");
-      toggle.textContent = open ? "Hide details" : "View details";
-      if (open) {
-        // Smoothly scroll to expose the raw activity timeline.
-        conversation.scrollTo({ top: conversation.scrollHeight, behavior: "smooth" });
+      const isOpen = detailsPanel?.classList.contains("rv-open");
+      if (isOpen) {
+        closeDetails();
       } else {
-        // Scroll back to the summary card.
-        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        openDetails("timeline");
       }
     });
 
     conversation.scrollTop = conversation.scrollHeight;
   }
 
+  // ---- Details panel (Timeline + Sanitized data) ----
+
+  function openDetails(tab: "timeline" | "data"): void {
+    detailsTab = tab;
+    if (!detailsPanel) {
+      detailsPanel = document.createElement("div");
+      detailsPanel.className = "rv-details-panel";
+      root.appendChild(detailsPanel);
+    }
+    renderDetails();
+    detailsPanel.classList.add("rv-open");
+    if (summaryToggleBtn) {
+      summaryToggleBtn.classList.add("rv-summary-toggle-open");
+      summaryToggleBtn.textContent = "Hide details";
+    }
+  }
+
+  function closeDetails(): void {
+    detailsPanel?.classList.remove("rv-open");
+    if (summaryToggleBtn) {
+      summaryToggleBtn.classList.remove("rv-summary-toggle-open");
+      summaryToggleBtn.textContent = "View details";
+    }
+  }
+
+  function renderDetails(): void {
+    if (!detailsPanel) return;
+
+    const tabsHtml = `
+      <div class="rv-details-tabs">
+        <button type="button" class="rv-details-tab ${detailsTab === "timeline" ? "rv-active" : ""}" data-tab="timeline">
+          Timeline
+        </button>
+        <button type="button" class="rv-details-tab ${detailsTab === "data" ? "rv-active" : ""}" data-tab="data">
+          Sanitized data
+        </button>
+        <button type="button" class="rv-details-close" data-details-close aria-label="Close details">×</button>
+      </div>
+    `;
+
+    let bodyHtml = "";
+    if (detailsTab === "timeline") {
+      if (detailedTimeline.length === 0) {
+        bodyHtml = `<div class="rv-details-empty">No activity yet — send a prompt first.</div>`;
+      } else {
+        bodyHtml = `<div class="rv-details-timeline">${detailedTimeline
+          .map((a) => {
+            const time = new Date(a.timestamp).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+              second: "2-digit",
+            });
+            return `
+              <div class="rv-details-item rv-dt-${a.kind}">
+                <div class="rv-details-item-icon">${iconFor(a.kind)}</div>
+                <div class="rv-details-item-body">
+                  <div class="rv-details-item-text">${escapeHtml(a.text)}</div>
+                  ${a.detail ? `<div class="rv-details-item-detail">${escapeHtml(a.detail)}</div>` : ""}
+                </div>
+                <div class="rv-details-item-time">${time}</div>
+              </div>
+            `;
+          })
+          .join("")}</div>`;
+      }
+    } else {
+      if (!sanitizedData) {
+        bodyHtml = `<div class="rv-details-empty">Send a prompt first — the sanitized snapshot is captured during the agent loop.</div>`;
+      } else {
+        const tokenRows = sanitizedData.tokens.length
+          ? sanitizedData.tokens
+              .map(
+                (t) => `
+              <div class="rv-token-row">
+                <span class="rv-token-icon">${iconForType(t.type)}</span>
+                <span class="rv-token-name">${escapeHtml(t.token)}</span>
+                <span class="rv-token-type">${escapeHtml(t.type)}</span>
+                <span class="rv-token-masked">${escapeHtml(t.masked)}</span>
+              </div>
+            `
+              )
+              .join("")
+          : `<div class="rv-details-empty">No sensitive values were detected on this page.</div>`;
+
+        bodyHtml = `
+          <div class="rv-data-summary">
+            <div class="rv-data-row"><span>Page</span><span>${escapeHtml(sanitizedData.title || sanitizedData.url || "—")}</span></div>
+            <div class="rv-data-row"><span>Elements sent to server</span><span>${sanitizedData.elementCount}</span></div>
+            <div class="rv-data-row"><span>Tokens created</span><span>${sanitizedData.tokens.length}</span></div>
+            <div class="rv-data-row ${sanitizedData.autoRedact ? "rv-ok" : "rv-bad"}">
+              <span>Auto-redact</span><span>${sanitizedData.autoRedact ? "● ON — PII protected" : "⚠ OFF — raw PII may leave the device"}</span>
+            </div>
+          </div>
+          <div class="rv-token-table">${tokenRows}</div>
+          <div class="rv-data-note">Masked values are shown only here, locally. The server never sees the original values — only tokens like <code>[EMAIL_01]</code>.</div>
+        `;
+      }
+    }
+
+    detailsPanel.innerHTML = `${tabsHtml}<div class="rv-details-body">${bodyHtml}</div>`;
+
+    detailsPanel.querySelectorAll<HTMLButtonElement>(".rv-details-tab").forEach((b) => {
+      b.addEventListener("click", () => openDetails(b.dataset.tab as "timeline" | "data"));
+    });
+    detailsPanel.querySelector("[data-details-close]")?.addEventListener("click", closeDetails);
+  }
+
   function setInputEnabled(enabled: boolean): void {
     input.disabled = !enabled;
     sendBtn.disabled = !enabled;
+    // Cancel is active while the agent is working, disabled when idle.
+    cancelBtn.disabled = enabled;
     if (enabled) input.focus();
   }
 
@@ -645,6 +817,74 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     applyOffset(dx, dy);
   }
 
+  function setSanitizedData(data: SanitizedDataSnapshot): void {
+    sanitizedData = data;
+    // Live-refresh the panel if it is open on the data tab.
+    if (detailsPanel?.classList.contains("rv-open") && detailsTab === "data") {
+      renderDetails();
+    }
+  }
+
+  function applyTheme(theme: "dark" | "light" | "auto"): void {
+    const light =
+      theme === "light" ||
+      (theme === "auto" && window.matchMedia("(prefers-color-scheme: light)").matches);
+    currentTheme = light ? "light" : "dark";
+    root.classList.toggle("rv-light", light);
+    themeBtn.textContent = light ? "☀️" : "🌙";
+    quickSettings
+      .querySelectorAll<HTMLButtonElement>("[data-qs-theme]")
+      .forEach((b) =>
+        b.classList.toggle("rv-active", b.dataset.qsTheme === currentTheme)
+      );
+  }
+
+  function setAutoRedactState(enabled: boolean): void {
+    qsAutoRedact.checked = enabled;
+  }
+
+  // ---- Footer / quick settings wiring ----
+
+  themeBtn.addEventListener("click", () => {
+    themeToggleHandler?.(currentTheme === "dark" ? "light" : "dark");
+  });
+
+  settingsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    quickSettings.classList.toggle("rv-open");
+  });
+
+  infoBtn.addEventListener("click", () => {
+    const isOpen = detailsPanel?.classList.contains("rv-open");
+    if (isOpen) {
+      closeDetails();
+    } else {
+      openDetails("timeline");
+    }
+  });
+
+  quickSettings.querySelectorAll<HTMLButtonElement>("[data-qs-theme]").forEach((b) => {
+    b.addEventListener("click", () => {
+      themeToggleHandler?.(b.dataset.qsTheme as "dark" | "light");
+    });
+  });
+
+  qsAutoRedact.addEventListener("change", () => {
+    autoRedactHandler?.(qsAutoRedact.checked);
+  });
+
+  // Close the quick-settings popover when clicking anywhere else in the card.
+  root.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    if (
+      quickSettings.classList.contains("rv-open") &&
+      !quickSettings.contains(target) &&
+      !settingsBtn.contains(target)
+    ) {
+      quickSettings.classList.remove("rv-open");
+    }
+  });
+
   function clearConversation(): void {
     // Tear down the live processing block (if any).
     if (currentProcessing) {
@@ -653,14 +893,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       currentProcessing = null;
     }
     detailedTimeline = [];
-    conversation.innerHTML = `
-      <div class="rv-empty">
-        <div class="rv-empty-title">Ready when you are</div>
-        <div class="rv-empty-hint">
-          Try: <code>scroll down</code> · <code>click submit</code> · <code>fill the email</code>
-        </div>
-      </div>
-    `;
+    conversation.innerHTML = emptyStateHTML();
   }
 
   function resetConversation(): void {
@@ -711,6 +944,15 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     setDragOffset,
     showSummary,
     resetConversation,
+    setSanitizedData,
+    applyTheme,
+    setAutoRedactState,
+    onThemeToggle(handler: (next: "dark" | "light") => void): void {
+      themeToggleHandler = handler;
+    },
+    onAutoRedactChange(handler: (enabled: boolean) => void): void {
+      autoRedactHandler = handler;
+    },
   };
 }
 
@@ -731,7 +973,7 @@ function chatHTML(): string {
           </div>
         </div>
         <div class="rv-backend-pill rv-server" id="rv-backend-pill" title="Active reasoning backend">
-          <span class="rv-backend-dot"></span>
+          <span class="rv-backend-icon">▤</span>
           <span id="rv-backend-label">Server</span>
         </div>
         <div class="rv-chat-controls">
@@ -740,27 +982,80 @@ function chatHTML(): string {
         </div>
       </header>
 
-      <main class="rv-conversation" id="rv-conversation">
-        <div class="rv-empty">
-          <div class="rv-empty-title">Ready when you are</div>
-          <div class="rv-empty-hint">
-            Try: <code>scroll down</code> · <code>click submit</code> · <code>fill the email</code>
-          </div>
-        </div>
-      </main>
+      <main class="rv-conversation" id="rv-conversation">${emptyStateHTML()}</main>
 
       <footer class="rv-composer">
-        <button class="rv-cancel-btn" id="rv-cancel-btn" type="button" hidden>Cancel</button>
-        <textarea
-          id="rv-input"
-          class="rv-input"
-          rows="1"
-          placeholder="Type a task…  (Enter to send, Shift+Enter for newline)"
-        ></textarea>
-        <button class="rv-send-btn" id="rv-send-btn" type="button" aria-label="Send">
-          <span class="rv-send-icon">➤</span>
-        </button>
+        <div class="rv-input-wrap">
+          <textarea
+            id="rv-input"
+            class="rv-input"
+            rows="1"
+            placeholder="Type a task…  (Enter to send)"
+          ></textarea>
+          <div class="rv-composer-row">
+            <button class="rv-attach-btn" id="rv-attach-btn" type="button" title="Attachments coming soon" disabled>📎</button>
+            <button class="rv-cancel-btn" id="rv-cancel-btn" type="button" disabled>Cancel</button>
+            <button class="rv-send-btn" id="rv-send-btn" type="button" aria-label="Send">
+              <span class="rv-send-icon">➤</span>
+            </button>
+          </div>
+        </div>
       </footer>
+
+      <footer class="rv-statusbar">
+        <div class="rv-statusbar-brand">
+          <span class="rv-statusbar-avatar">RV</span>
+          <span class="rv-statusbar-name">RedactVision</span>
+          <span class="rv-statusbar-pill">
+            <span class="rv-statusbar-dot rv-ready" id="rv-statusbar-dot"></span>
+            <span id="rv-statusbar-label">Ready</span>
+          </span>
+        </div>
+        <div class="rv-statusbar-actions">
+          <button class="rv-sb-btn" id="rv-settings-btn" type="button" title="Quick settings" aria-label="Quick settings">⚙️</button>
+          <button class="rv-sb-btn" id="rv-theme-btn" type="button" title="Toggle theme" aria-label="Toggle theme">🌙</button>
+          <button class="rv-sb-btn" id="rv-info-btn" type="button" title="Details & sanitized data" aria-label="Details">ⓘ</button>
+        </div>
+      </footer>
+
+      <div class="rv-quick-settings" id="rv-quick-settings">
+        <div class="rv-qs-title">Quick settings</div>
+        <div class="rv-qs-row">
+          <span class="rv-qs-label">Theme</span>
+          <div class="rv-qs-seg">
+            <button type="button" data-qs-theme="dark">Dark</button>
+            <button type="button" data-qs-theme="light">Light</button>
+          </div>
+        </div>
+        <label class="rv-qs-row rv-qs-toggle-row">
+          <span class="rv-qs-label">Auto-redact PII</span>
+          <input type="checkbox" id="rv-qs-autoredact" checked />
+          <span class="rv-qs-switch"><span class="rv-qs-switch-thumb"></span></span>
+        </label>
+      </div>
+    </div>
+  `;
+}
+
+function emptyStateHTML(): string {
+  return `
+    <div class="rv-empty">
+      <div class="rv-empty-bot">🤖</div>
+      <div class="rv-empty-title">Ready when you are</div>
+      <div class="rv-empty-try">Try:</div>
+      <div class="rv-empty-chips">
+        <button type="button" class="rv-chip-suggest" data-suggest="scroll down">
+          <span class="rv-chip-ic">↓</span> scroll down
+        </button>
+        <span class="rv-chip-sep">·</span>
+        <button type="button" class="rv-chip-suggest" data-suggest="click submit">
+          <span class="rv-chip-ic">↖</span> click submit
+        </button>
+        <span class="rv-chip-sep">·</span>
+        <button type="button" class="rv-chip-suggest" data-suggest="fill the email">
+          <span class="rv-chip-ic">✎</span> fill the email
+        </button>
+      </div>
     </div>
   `;
 }

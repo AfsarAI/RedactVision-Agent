@@ -32,6 +32,65 @@ import {
 console.log("[RedactVision] Content script initialized");
 
 /* ============================================================
+ *  Dashboard settings (shared with the popup via chrome.storage)
+ *  - active          master switch — launcher is not injected when off
+ *  - showWidget      launcher pill visibility
+ *  - autoRedact      privacy firewall on/off
+ *  - theme           dark | light | auto (applied to the chat card)
+ *  - domainWhitelist when non-empty, the agent only runs on these hosts
+ * ============================================================ */
+
+interface DashboardSettings {
+  active: boolean;
+  showWidget: boolean;
+  autoRedact: boolean;
+  theme: "dark" | "light" | "auto";
+  domainWhitelist: string[];
+}
+
+const DASHBOARD_KEY = "rv_dashboard_settings";
+
+/** Persist a single dashboard setting (used by in-card quick settings). */
+async function saveDashboardSetting<K extends keyof DashboardSettings>(
+  key: K,
+  value: DashboardSettings[K]
+): Promise<void> {
+  try {
+    const s = await loadDashboardSettings();
+    s[key] = value;
+    await chrome.storage.local.set({ [DASHBOARD_KEY]: s });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadDashboardSettings(): Promise<DashboardSettings> {
+  const defaults: DashboardSettings = {
+    active: true,
+    showWidget: true,
+    autoRedact: true,
+    theme: "dark",
+    domainWhitelist: [],
+  };
+  try {
+    const stored = await chrome.storage.local.get(DASHBOARD_KEY);
+    const s = stored?.[DASHBOARD_KEY] as Partial<DashboardSettings> | undefined;
+    if (!s) return defaults;
+    return {
+      active: s.active !== false,
+      showWidget: s.showWidget !== false,
+      autoRedact: s.autoRedact !== false,
+      theme: s.theme === "light" || s.theme === "auto" ? s.theme : "dark",
+      domainWhitelist: Array.isArray(s.domainWhitelist)
+        ? s.domainWhitelist.filter((d): d is string => typeof d === "string")
+        : [],
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+/* ============================================================
  *  Local perception + privacy firewall (run once on page load)
  *  - rawPageDOM is NEVER sent to the server.
  *  - sanitizedPageDOM is the only thing that can leave the device.
@@ -240,6 +299,22 @@ async function openInPagePanelAsync(): Promise<void> {
     config
   );
 
+  // Apply the popup's dashboard settings to this session.
+  const dash = await loadDashboardSettings();
+  session.setAutoRedact(dash.autoRedact);
+  ui.applyTheme(dash.theme);
+  ui.setAutoRedactState(dash.autoRedact);
+
+  // In-card quick settings (footer ⚙ / 🌙 buttons) persist to storage.
+  ui.onThemeToggle(async (next) => {
+    ui.applyTheme(next);
+    await saveDashboardSetting("theme", next);
+  });
+  ui.onAutoRedactChange(async (enabled) => {
+    session.setAutoRedact(enabled);
+    await saveDashboardSetting("autoRedact", enabled);
+  });
+
   const sessionSignal = { cancelled: false };
 
   // Render the initial redaction summary using whatever the privacy
@@ -264,6 +339,8 @@ async function openInPagePanelAsync(): Promise<void> {
       const uiPhase = isCompleted ? "completed" : (isFailed || isOffline) ? "error" : "thinking";
       // After the prompt, re-summarize (page state may have changed).
       ui.setRedactionSummary(session.getRedactionSummary(false));
+      // Refresh the sanitized-data snapshot for the details panel.
+      ui.setSanitizedData(session.getSanitizedData());
       // Render the polished end-of-task summary card.
       const summaryPhase = isCompleted
         ? "completed"
@@ -383,14 +460,15 @@ function injectAgentIndicator(): void {
       align-items: center;
       gap: 8px;
       padding: 8px 14px 8px 12px;
-      background: linear-gradient(135deg, #0e1428 0%, #131a30 100%);
-      border: 1px solid rgba(91, 107, 255, 0.4);
+      background: rgba(14, 20, 40, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.16);
       border-radius: 999px;
-      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
       font-size: 12.5px;
       font-weight: 500;
       color: #e6ecff;
-      backdrop-filter: blur(10px);
+      backdrop-filter: blur(18px) saturate(170%);
+      -webkit-backdrop-filter: blur(18px) saturate(170%);
     }
     .rv-indicator-icon {
       width: 22px;
@@ -441,7 +519,48 @@ function injectAgentIndicator(): void {
   });
 }
 
-injectAgentIndicator();
+/* ============================================================
+ *  Widget visibility + settings application
+ * ============================================================ */
+
+function applyWidgetVisibility(visible: boolean): void {
+  const launcher = document.getElementById("rv-agent-indicator");
+  if (launcher) {
+    (launcher as HTMLElement).style.display = visible ? "" : "none";
+  }
+  if (!visible && panel) {
+    closeInPagePanel();
+  }
+}
+
+function removeAgentUi(): void {
+  closeInPagePanel();
+  document.getElementById("rv-agent-indicator")?.remove();
+}
+
+/** Re-read dashboard settings and apply them live (popup → content). */
+async function applyDashboardSettings(): Promise<void> {
+  const s = await loadDashboardSettings();
+
+  // Master switch — remove the UI entirely when off, inject when on.
+  const whitelisted =
+    s.domainWhitelist.length === 0 || s.domainWhitelist.includes(HOSTNAME);
+  const shouldRun = s.active && whitelisted;
+  const launcher = document.getElementById("rv-agent-indicator");
+  if (shouldRun && !launcher) {
+    injectAgentIndicator();
+    applyWidgetVisibility(s.showWidget);
+  } else if (!shouldRun) {
+    removeAgentUi();
+    return;
+  }
+
+  applyWidgetVisibility(s.showWidget);
+  if (panel) {
+    panel.session.setAutoRedact(s.autoRedact);
+    panel.ui.applyTheme(s.theme);
+  }
+}
 
 /* ============================================================
  *  Popup message bridge
@@ -475,5 +594,34 @@ chrome.runtime.onMessage.addListener(
       sendResponse({ tokens });
       return true;
     }
+
+    if (msg.type === "RV_SET_WIDGET_VISIBLE") {
+      const visible = (msg as { visible?: boolean }).visible;
+      void applyWidgetVisibility(visible !== false);
+      return true;
+    }
+
+    if (msg.type === "RV_SETTINGS_UPDATED") {
+      void applyDashboardSettings();
+      return true;
+    }
   }
 );
+
+/* ============================================================
+ *  Init — respect the dashboard settings before injecting anything.
+ *  The launcher is only injected when the agent is active AND the
+ *  host is allowed by the domain whitelist (if non-empty).
+ * ============================================================ */
+
+void (async function init() {
+  const s = await loadDashboardSettings();
+  const whitelisted =
+    s.domainWhitelist.length === 0 || s.domainWhitelist.includes(HOSTNAME);
+  if (!s.active || !whitelisted) {
+    console.log("[RedactVision] Agent disabled for this page (settings/whitelist)");
+    return;
+  }
+  injectAgentIndicator();
+  applyWidgetVisibility(s.showWidget);
+})();
