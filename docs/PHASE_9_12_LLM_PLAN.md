@@ -2,13 +2,12 @@
 
 ## What changed
 
-The agent now supports **three reasoning backends**:
+The agent now supports a **server-only action planner** plus a local privacy helper:
 
-1. **Server-side LLM** — calls an OpenAI-compatible Chat Completions endpoint (Groq by default, also works with OpenRouter, Together, llama.cpp server, vLLM with `--openai-compatible`).
-2. **On-device LLM** — runs `onnx-community/Qwen2.5-1.5B-Instruct` (q4) in the browser via `@huggingface/transformers`. Auto-detects WebGPU.
-3. **Local rules** — the original deterministic keyword planner (always available, used as fallback).
+1. **Server-side LLM planner** — calls the local FastAPI server at `POST /llm/plan`.
+2. **On-device privacy/perception helper** — can load `onnx-community/Qwen2.5-0.5B-Instruct` (q4) in the browser via `@huggingface/transformers`. It is not an action planner.
 
-The selected backend is configurable from a Settings panel in both the popup and the in-page panel.
+The extension configuration exposes server URL and local model id. Provider API keys stay only in the server `.env`.
 
 ## Architecture
 
@@ -19,11 +18,9 @@ AgentSession.runPrompt(prompt)            ← multi-iteration loop
    ↓
    iteration = 0
    while iteration < MAX_ITERATIONS:
-       DOM extract → Privacy Firewall → sanitize
+       DOM extract + local visual perception → Privacy Firewall → sanitize
        LLMPlanner.plan(prompt, sanitizedDOM, history)
-         ├─ client-llm (Transformers.js)         ← only if enabled
-         ├─ server-llm (POST /llm/plan)          ← only if configured
-         └─ fallback rules (deterministic)       ← always available
+         └─ server-llm (POST /llm/plan)
        validate → execute → verify
        if llmAction.done: break
        iteration++
@@ -36,8 +33,8 @@ The LLM output includes a `done: bool` flag so the LLM can signal task completio
 | File | Purpose |
 |------|---------|
 | `extension/src/llm/action-schema.ts` | Shared TS types for the LLM action (action/target/value/direction/amount/confidence/done) + validator |
-| `extension/src/llm/client-llm.ts` | Transformers.js wrapper with WebGPU detection, model download, IndexedDB cache |
-| `extension/src/llm/llm-planner.ts` | Orchestrator (client → server → fallback), config persistence |
+| `extension/src/llm/client-llm.ts` | Transformers.js wrapper for local privacy/perception assistance |
+| `extension/src/llm/llm-planner.ts` | Server-only planner orchestrator, config persistence |
 | `server/redactvision_server/llm.py` | OpenAI-compatible client (Groq) |
 | `server/redactvision_server/planner_prompt.py` | System + user prompt templates |
 | `server/tests/test_llm_planner.py` | Server-side smoke tests (12 tests, all pass) |
@@ -82,25 +79,24 @@ export LLM_API_KEY="sk-..."
 
 ### 2. On-device LLM
 
-The `@huggingface/transformers` package is an `optionalDependencies` entry. It is **not** installed by default. To enable the on-device backend:
+The `@huggingface/transformers` package is an `optionalDependencies` entry. It is **not** installed by default. To enable optional on-device privacy/perception assistance:
 
 ```bash
 cd extension
 npm install @huggingface/transformers
 ```
 
-The first time the user enables the "on-device" backend, the extension downloads `onnx-community/Qwen2.5-1.5B-Instruct` (~1GB) from Hugging Face. The model is cached in IndexedDB and persists across browser restarts.
+The first time local inference runs, the extension downloads `onnx-community/Qwen2.5-0.5B-Instruct` from Hugging Face. The model is cached in IndexedDB and persists across browser restarts.
 
 If WebGPU is available, the model runs on GPU (~1-3s per response). Otherwise it falls back to ONNX WASM (CPU, 5-15s per response).
 
 ### 3. Settings UI
 
-Click the ⚙ button in the popup header (or in the in-page panel). The modal exposes:
+Open the extension popup. The dashboard exposes:
 
-- **Backend**: Auto / Server / On-device / Local rules only
 - **Server URL** (default `http://127.0.0.1:8001`)
-- **API key** (stored in `chrome.storage.local`, never sent anywhere except the configured URL)
-- **On-device model** (default `onnx-community/Qwen2.5-1.5B-Instruct`)
+- **On-device model** (default `onnx-community/Qwen2.5-0.5B-Instruct`)
+- **Encrypted local personal profiles**
 - **Test connection** button — hits `<server>/llm/health` and shows the configured model
 
 Settings are persisted per-extension via `chrome.storage.local`.
@@ -110,7 +106,7 @@ Settings are persisted per-extension via `chrome.storage.local`.
 - The server **never** receives the local token map.
 - The server receives only the **sanitized** DOM. The client replaces sensitive values with tokens like `[EMAIL_01]` before sending.
 - The server re-validates incoming payloads via `validate_action_request` and rejects if raw PII is detected.
-- The API key is stored only in `chrome.storage.local` and is sent only to the user-configured server URL.
+- Provider API keys are stored only in the server environment (`.env`). The extension stores the server URL, never upstream LLM provider keys.
 - The on-device model runs entirely in the browser. The model file is fetched from `huggingface.co` on first use; nothing else leaves the device.
 - All LLM responses pass through the `validateLLMAction` shape check before reaching the executor. Invalid actions are rejected without execution.
 
@@ -124,7 +120,7 @@ source ../.venv/bin/activate
 python tests/test_llm_planner.py
 ```
 
-Covers: JSON parsing (clean, fenced, with chatter), shape validation, prompt template, fallback path, health endpoint.
+Covers: JSON parsing (clean, fenced, with chatter), shape validation, prompt template, unavailable-server path, health endpoint.
 
 ### Client tests (24 tests, all pass)
 

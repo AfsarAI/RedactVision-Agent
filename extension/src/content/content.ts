@@ -519,37 +519,35 @@ async function buildPanel(): Promise<void> {
 
     ui.setStatus("thinking", "Working…");
     try {
-      const outcome = await session.runPrompt(text);
+      // If the session is paused (waiting for user input), resume it.
+      // Otherwise start a fresh prompt.
+      const outcome =
+        session.isPaused()
+          ? await session.resumeWithValue(text)
+          : await session.runPrompt(text);
+
       const finalPhase = outcome.phase;
+
+      // "paused" means the executor still couldn't resolve the value.
+      // Re-enable input so the user can try again with a different reply.
+      if (finalPhase === "paused") {
+        ui.setStatus("thinking", "Waiting for input…");
+        ui.setInputEnabled(true);
+        // No summary card for paused — just leave the missing_info
+        // activity visible so the user knows what to type.
+        return;
+      }
+
       const isCompleted = finalPhase === "completed";
       const isFailed = finalPhase === "failed" || finalPhase === "max_iterations_reached" || finalPhase === "cancelled";
       const isOffline = finalPhase === "offline";
       const uiPhase = isCompleted ? "completed" : (isFailed || isOffline) ? "error" : "thinking";
-      const isContextInvalidatedOutcome = outcome.reason.includes(
-        "Extension context invalidated"
-      );
 
-      if (isContextInvalidatedOutcome) {
-        // ONE clear message with a working refresh button. We deliberately
-        // skip the generic end-of-task summary card here — showing both a
-        // "Task could not be completed" summary AND this error would stack
-        // two conflicting messages for the same failure.
-        ui.setRedactionSummary(session.getRedactionSummary(false));
-        ui.setSanitizedData(session.getSanitizedData());
-        ui.showSystemError({
-          type: "extension_context_invalidated",
-          title: "Please refresh this page",
-          message:
-            "The extension was updated or reloaded. This page is still connected to the previous version — refresh (F5 / Cmd+R) to reconnect.",
-          actionLabel: "🔄 Refresh Page",
-          actionType: "refresh",
-        });
-        ui.setStatus("error", "Refresh needed");
-      } else {
       // After the prompt, re-summarize (page state may have changed).
       ui.setRedactionSummary(session.getRedactionSummary(false));
       // Refresh the sanitized-data snapshot for the details panel.
       ui.setSanitizedData(session.getSanitizedData());
+
       // Render the polished end-of-task summary card.
       const summaryPhase = isCompleted
         ? "completed"

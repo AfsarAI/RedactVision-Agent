@@ -27,6 +27,18 @@ import {
   PlannerConfig,
 } from "../llm/llm-planner";
 import { pingServer } from "../llm/extension-bridge";
+import {
+  getSelectedProfile,
+  getSelectedProfileId,
+  loadLocalProfiles,
+  removeLocalProfile,
+  saveLocalProfiles,
+  setSelectedProfileId,
+  type LocalProfileEntry,
+  type LocalProfileValues,
+  normalizeFieldKey,
+  upsertLocalProfile,
+} from "../privacy/profile-store";
 
 interface DashboardSettings {
   active: boolean;
@@ -95,14 +107,126 @@ document.addEventListener("DOMContentLoaded", async () => {
   const domainInput = $<HTMLInputElement>("rv-domain-input");
   const doneBtn = $<HTMLButtonElement>("rv-done-btn");
   const statusLabel = $("rv-status-label");
-  const statusDot = document.querySelector<HTMLElement>(".rv-status-dot");
+  const statusDot = document.querySelector(".rv-status-dot") as HTMLElement;
+  const profileForm = $<HTMLFormElement>("rv-profile-form");
+  const profileNameInput = $<HTMLInputElement>("rv-profile-name");
+  const profileEmailInput = $<HTMLInputElement>("rv-profile-email");
+  const profilePhoneInput = $<HTMLInputElement>("rv-profile-phone");
+  const profileAddressInput = $<HTMLInputElement>("rv-profile-address");
+  const profileCustomKeyInput = $<HTMLInputElement>("rv-profile-custom-key");
+  const profileCustomValueInput = $<HTMLInputElement>("rv-profile-custom-value");
+  const profileList = $("rv-profile-list");
+  const localProfileStatus = $("rv-local-profile-status");
+  const localModelStatus = $("rv-local-model-status");
 
-  // Guard: if critical elements are missing, log and exit gracefully
-  if (!activeToggle || !showWidgetToggle || !autoRedactToggle || !serverUrlInput ||
-      !testConnBtn || !testResult || !domainChips || !domainForm || !domainInput ||
-      !doneBtn || !statusLabel) {
-    console.error("[RedactVision] Popup: Required DOM elements missing, dashboard cannot initialize");
-    return;
+  async function renderLocalAIStatus(): Promise<void> {
+    localProfileStatus.textContent = "Ready";
+    localProfileStatus.className = "rv-local-ai-chip rv-ok";
+
+    try {
+      const mod = await import(/* @vite-ignore */ "@huggingface/transformers" as string);
+      if (mod && typeof mod.pipeline === "function") {
+        localModelStatus.textContent = "Installed";
+        localModelStatus.className = "rv-local-ai-chip rv-ok";
+      } else {
+        localModelStatus.textContent = "Unavailable";
+        localModelStatus.className = "rv-local-ai-chip rv-warn";
+      }
+    } catch {
+      localModelStatus.textContent = "Optional";
+      localModelStatus.className = "rv-local-ai-chip rv-warn";
+    }
+  }
+
+  function renderProfileLabel(values: LocalProfileValues): string {
+    if (values.name) return values.name;
+    if (values.email) return values.email;
+    if (values.phone) return values.phone;
+    return "Saved profile";
+  }
+
+  function renderFieldPills(values: LocalProfileValues): string[] {
+    const pills: string[] = [];
+    const preferred = ["name", "email", "phone", "address"];
+    for (const field of preferred) {
+      if (values[field]) pills.push(`${formatFieldName(field)}: ${values[field]}`);
+    }
+    for (const [field, value] of Object.entries(values)) {
+      if (preferred.includes(field) || !value) continue;
+      pills.push(`${formatFieldName(field)}: ${value}`);
+    }
+    return pills.slice(0, 6);
+  }
+
+  async function renderProfiles(): Promise<void> {
+    const profiles = await loadLocalProfiles();
+    const selectedProfileId = await getSelectedProfileId();
+
+    if (profiles.length === 0) {
+      profileList.innerHTML = `
+        <div class="rv-empty-profiles">
+          No saved personal profiles yet. Add your details above to keep them on-device only.
+        </div>
+      `;
+      return;
+    }
+
+    profileList.innerHTML = profiles
+      .map((profile) => {
+        const isSelected = profile.id === selectedProfileId;
+        const pills = renderFieldPills(profile.values)
+          .map((pill) => `<span class="rv-profile-pill">${escapeHtml(pill)}</span>`)
+          .join("");
+
+        return `
+          <div class="rv-profile-card ${isSelected ? "active" : ""}">
+            <div class="rv-profile-header">
+              <div class="rv-profile-name">${escapeHtml(renderProfileLabel(profile.values))}</div>
+              ${isSelected ? '<span class="rv-profile-badge">Selected</span>' : ""}
+            </div>
+            <div class="rv-profile-details">${pills || '<span class="rv-profile-pill">No visible fields saved</span>'}</div>
+            <div class="rv-profile-actions">
+              <label class="rv-profile-select">
+                <input type="radio" name="rv-selected-profile" value="${profile.id}" ${isSelected ? "checked" : ""} />
+                <span>Use this profile</span>
+              </label>
+              <div style="display:flex; gap:6px; align-items:center;">
+                <button type="button" class="rv-profile-form-apply" data-apply-profile="${profile.id}">Use for form</button>
+                <button type="button" class="rv-profile-delete" data-delete-profile="${profile.id}">Delete</button>
+              </div>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    profileList.querySelectorAll<HTMLInputElement>('input[name="rv-selected-profile"]').forEach((radio) => {
+      radio.addEventListener("change", async () => {
+        if (radio.checked) {
+          await setSelectedProfileId(radio.value);
+          await renderProfiles();
+          setStatus("Profile selected");
+        }
+      });
+    });
+
+    profileList.querySelectorAll<HTMLButtonElement>("[data-apply-profile]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const profileId = button.dataset.applyProfile || "";
+        if (!profileId) return;
+        await setSelectedProfileId(profileId);
+        await renderProfiles();
+        setStatus("Profile selected for form fill");
+      });
+    });
+
+    profileList.querySelectorAll<HTMLButtonElement>("[data-delete-profile]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await removeLocalProfile(button.dataset.deleteProfile || "");
+        await renderProfiles();
+        setStatus("Profile removed");
+      });
+    });
   }
 
   // Load persisted state
@@ -129,6 +253,44 @@ document.addEventListener("DOMContentLoaded", async () => {
     await saveDashboard(settings);
     setStatus("Settings saved");
   });
+
+  profileForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const values: LocalProfileValues = {
+      name: profileNameInput.value.trim() || undefined,
+      email: profileEmailInput.value.trim() || undefined,
+      phone: profilePhoneInput.value.trim() || undefined,
+      address: profileAddressInput.value.trim() || undefined,
+    };
+    const customKey = normalizeFieldKey(profileCustomKeyInput.value);
+    const customValue = profileCustomValueInput.value.trim();
+    if (profileCustomKeyInput.value.trim() && customValue) {
+      values[customKey] = customValue;
+    }
+
+    const hasAnyValue = Object.values(values).some((value) => !!value);
+    if (!hasAnyValue) {
+      setStatus("Add at least one field", "error");
+      return;
+    }
+
+    const profile: LocalProfileEntry = {
+      id: `profile-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      label: renderProfileLabel(values),
+      createdAt: Date.now(),
+      values,
+    };
+
+    await upsertLocalProfile(profile);
+    await setSelectedProfileId(profile.id);
+    profileForm.reset();
+    await renderProfiles();
+    setStatus("Profile saved locally");
+  });
+
+  await renderProfiles();
+  await renderLocalAIStatus();
 
   // ----- Auto-save wiring -----
 
@@ -337,4 +499,10 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function formatFieldName(field: string): string {
+  return field
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

@@ -8,6 +8,7 @@
  *     can still reach the FastAPI server.
  *   - Hold the in-flight message handler for RV_PING_SERVER and
  *     RV_PLAN_ACTION.
+ *   - Capture visible-tab screenshots for local visual perception.
  *
  * Privacy contract (CLAUDE.md §4):
  *   - The extension NEVER holds server API keys. The server reads them
@@ -36,11 +37,11 @@ chrome.runtime.onInstalled.addListener(() => {
 const SERVER_TIMEOUT_MS = 120_000;
 
 chrome.runtime.onMessage.addListener(
-  (message: { type?: string } & Record<string, unknown>, _sender, sendResponse) => {
+  (message: { type?: string } & Record<string, unknown>, sender, sendResponse) => {
     if (!message || typeof message.type !== "string") return false;
 
-    // Each handler is async; we return `true` to keep the channel open
-    // for the async sendResponse. Errors are caught and sent back gracefully.
+    const tabId = sender.tab?.id;
+
     if (message.type === "RV_PING_SERVER") {
       void handlePing(String(message.serverUrl || ""))
         .then(sendResponse)
@@ -68,6 +69,42 @@ chrome.runtime.onMessage.addListener(
             error: err instanceof Error ? err.message : String(err),
           });
         });
+      return true;
+    }
+
+    if (message.type === "RV_CAPTURE_VISIBLE_TAB" || message.type === "RV_CAPTURE_VIEWPORT") {
+      void handleCaptureVisibleTab().then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "RV_CDP_CLICK") {
+      const x = Number(message.x) || 0;
+      const y = Number(message.y) || 0;
+      void handleCDPClick(tabId, x, y).then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "RV_CDP_TYPE") {
+      const x = Number(message.x) || 0;
+      const y = Number(message.y) || 0;
+      const text = String(message.text || "");
+      void handleCDPType(tabId, x, y, text).then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "RV_CDP_KEY") {
+      const key = String(message.key || "Enter");
+      const code = String(message.code || "Enter");
+      const keyCode = Number(message.keyCode) || 13;
+      void handleCDPKey(tabId, key, code, keyCode).then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "RV_VISUAL_GROUND") {
+      const serverUrl = String(message.serverUrl || "http://127.0.0.1:8001");
+      const image = String(message.image || "");
+      const targetDescription = String(message.targetDescription || "");
+      void handleVisualGround(serverUrl, image, targetDescription).then(sendResponse);
       return true;
     }
 
@@ -113,6 +150,34 @@ async function handlePing(serverUrl: string): Promise<unknown> {
       error: isAbort ? `Server timeout after ${SERVER_TIMEOUT_MS}ms` : `Server unreachable: ${msg}`,
     };
   }
+}
+
+async function handleCaptureVisibleTab(): Promise<unknown> {
+  try {
+    const dataUrl = await chrome.tabs.captureVisibleTab({ format: "png" });
+    if (!dataUrl) {
+      return { ok: false, dataUrl: null, width: 0, height: 0, error: "No screenshot returned" };
+    }
+    const dimensions = await readImageDimensions(dataUrl);
+    return { ok: true, dataUrl, ...dimensions };
+  } catch (e) {
+    return {
+      ok: false,
+      dataUrl: null,
+      width: 0,
+      height: 0,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}
+
+async function readImageDimensions(dataUrl: string): Promise<{ width: number; height: number }> {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  const bitmap = await createImageBitmap(blob);
+  const dimensions = { width: bitmap.width, height: bitmap.height };
+  bitmap.close();
+  return dimensions;
 }
 
 async function handlePlan(msg: RVPlanMessage): Promise<unknown> {
@@ -186,3 +251,203 @@ async function handlePlan(msg: RVPlanMessage): Promise<unknown> {
     };
   }
 }
+
+// ===================================================================
+// Chrome DevTools Protocol (CDP) Low-Level Input Execution
+// ===================================================================
+
+async function getTargetTabId(callerTabId?: number): Promise<number | null> {
+  if (typeof callerTabId === "number" && callerTabId > 0) {
+    return callerTabId;
+  }
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tabs[0]?.id ?? null;
+}
+
+/**
+ * Execute a low-level physical mouse click sequence via CDP.
+ * Bypasses synthetic event barriers (React, Vue, Lexical, ProseMirror, Canvas, WebGL).
+ */
+async function handleCDPClick(tabId?: number, x = 0, y = 0): Promise<{ ok: boolean; error?: string }> {
+  const targetTabId = await getTargetTabId(tabId);
+  if (!targetTabId) {
+    return { ok: false, error: "No active tab found for CDP execution" };
+  }
+
+  const target = { tabId: targetTabId };
+
+  try {
+    // 1. Attach debugger protocol safely
+    await chrome.debugger.attach(target, "1.3");
+
+    // 2. Dispatch mouseMoved event
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: Math.round(x),
+      y: Math.round(y),
+    });
+
+    // 3. Mouse Down (mousePressed)
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mousePressed",
+      x: Math.round(x),
+      y: Math.round(y),
+      button: "left",
+      clickCount: 1,
+    });
+
+    // Human-like delay
+    await new Promise((res) => setTimeout(res, 80));
+
+    // 4. Mouse Up (mouseReleased)
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mouseReleased",
+      x: Math.round(x),
+      y: Math.round(y),
+      button: "left",
+      clickCount: 1,
+    });
+
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[ServiceWorker] CDP Click failed:", msg);
+    return { ok: false, error: msg };
+  } finally {
+    // 5. Always detach cleanly
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+/**
+ * Execute real physical text typing via CDP Input.insertText & Input.dispatchKeyEvent.
+ * Dispatches real native input into rich editors (ChatGPT, Claude, Lexical, Slate, Monaco).
+ */
+async function handleCDPType(
+  tabId?: number,
+  x = 0,
+  y = 0,
+  text = ""
+): Promise<{ ok: boolean; error?: string }> {
+  const targetTabId = await getTargetTabId(tabId);
+  if (!targetTabId) {
+    return { ok: false, error: "No active tab found for CDP typing" };
+  }
+
+  const target = { tabId: targetTabId };
+
+  try {
+    await chrome.debugger.attach(target, "1.3");
+
+    // Click at coordinates to focus the target element
+    if (x > 0 && y > 0) {
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: Math.round(x),
+        y: Math.round(y),
+        button: "left",
+        clickCount: 1,
+      });
+      await new Promise((res) => setTimeout(res, 40));
+      await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: Math.round(x),
+        y: Math.round(y),
+        button: "left",
+        clickCount: 1,
+      });
+      await new Promise((res) => setTimeout(res, 60));
+    }
+
+    // Use Input.insertText for authentic, clean insertion into rich text / React editors
+    await chrome.debugger.sendCommand(target, "Input.insertText", {
+      text,
+    });
+
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[ServiceWorker] CDP Type failed:", msg);
+    return { ok: false, error: msg };
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+/**
+ * Dispatch keyboard events (e.g. Enter key) via CDP.
+ */
+async function handleCDPKey(
+  tabId?: number,
+  key = "Enter",
+  code = "Enter",
+  keyCode = 13
+): Promise<{ ok: boolean; error?: string }> {
+  const targetTabId = await getTargetTabId(tabId);
+  if (!targetTabId) {
+    return { ok: false, error: "No active tab found for CDP key execution" };
+  }
+
+  const target = { tabId: targetTabId };
+
+  try {
+    await chrome.debugger.attach(target, "1.3");
+
+    // Key Down
+    await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+      type: "rawKeyDown",
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+    });
+
+    await new Promise((res) => setTimeout(res, 50));
+
+    // Key Up
+    await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+    });
+
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn("[ServiceWorker] CDP Key failed:", msg);
+    return { ok: false, error: msg };
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+/**
+ * Call the server's visual grounding endpoint to locate elements on a screenshot.
+ */
+async function handleVisualGround(
+  serverUrl: string,
+  image: string,
+  targetDescription: string
+): Promise<{ ok: boolean; result?: { found: boolean; point?: [number, number]; box_2d?: [number, number, number, number] }; error?: string }> {
+  try {
+    const resp = await fetch(`${serverUrl}/llm/visual-ground`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        image,
+        target_description: targetDescription,
+      }),
+    });
+
+    if (!resp.ok) {
+      return { ok: false, error: `HTTP ${resp.status}` };
+    }
+
+    const data = await resp.json();
+    return { ok: true, result: data };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+

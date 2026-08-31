@@ -8,8 +8,8 @@
  *   - server/redactvision_server/planner_prompt.py (server prompt — must mirror)
  *
  * PRIVACY: This schema is the only thing that crosses the network boundary.
- * The `value` field may contain a token reference like [EMAIL_01] — never
- * the original value.
+ * The `value` field may contain a page token like [EMAIL_01] or a local
+ * profile token like [PROFILE:email] — never the original value.
  */
 
 export type LLMActionType =
@@ -31,10 +31,9 @@ export interface LLMPlannedAction {
   /** CSS selector for click/type/select. Omit for scroll/wait/done. */
   target?: string;
   /**
-   * Value to type. May be a literal user-supplied string (e.g. "Afsar") or
-   * a token reference like "[EMAIL_01]". The executor resolves tokens locally.
-   * For sensitive fields with no user-supplied value, OMIT this field so
-   * the deterministic planner / token logic can fill in the right token.
+   * Value to type. May be a literal user-supplied non-sensitive string, a page
+   * token like "[EMAIL_01]", or an encrypted local profile token like
+   * "[PROFILE:pan_card]". The executor resolves tokens locally.
    */
   value?: string;
   /** For scroll. Defaults to "down" if action === "scroll" and direction omitted. */
@@ -78,6 +77,9 @@ export interface LLMPlannerInput {
       value: string | null;
       placeholder: string | null;
       ariaLabel: string | null;
+      /** Label text from the associated <label> element — primary signal
+       *  for the local LLM to determine field semantics dynamically. */
+      label: string;
       selector: string;
     }>;
   };

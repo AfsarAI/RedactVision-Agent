@@ -113,9 +113,10 @@ class MultiProviderLLM:
 
                 if is_retryable and attempt_idx < self.max_retries_per_provider:
                     logger.warning(
-                        "LLM retryable failure — provider=%s attempt=%d/%d error=%s",
+                        "LLM retryable failure — provider=%s attempt=%d/%d error=%s (backing off 1s)",
                         provider.name, attempt_idx + 1, self.max_retries_per_provider + 1, err,
                     )
+                    time.sleep(1.0)
                     continue  # retry same provider
 
                 # Non-retryable, or out of retries on this provider

@@ -22,6 +22,7 @@ class ActionType(str, Enum):
     CLICK = "click"
     TYPE = "type"
     SCROLL = "scroll"
+    SELECT = "select"
     NAVIGATE = "navigate"
     WAIT = "wait"
 
@@ -79,6 +80,19 @@ class PlanResponse(BaseModel):
         None,
         description="Specific model slug that answered (e.g. 'llama-3.3-70b-versatile').",
     )
+
+
+class VisualGroundRequest(BaseModel):
+    image: str = Field(..., description="Base64 or data URL screenshot of the viewport")
+    target_description: str = Field(..., description="Natural language description of the target element")
+    viewport: Optional[dict] = None
+
+
+class VisualGroundResponse(BaseModel):
+    found: bool = True
+    point: Optional[list[int]] = None  # [x, y] on 0-1000 scale
+    box_2d: Optional[list[int]] = None  # [ymin, xmin, ymax, xmax]
+    description: Optional[str] = None
 
 
 class ConnectionStatus(BaseModel):

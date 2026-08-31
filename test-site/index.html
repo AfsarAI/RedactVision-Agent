@@ -463,11 +463,11 @@
     <form id="demo-form">
 
       <div class="form-group">
-        <label for="full-name">Full Name <span class="req">*</span></label>
+        <label>Full Name <span class="req">*</span></label>
         <div class="field-wrap">
           <input
-            id="full-name"
-            name="fullName"
+            id="f1"
+            name="field1"
             type="text"
             class="demo-input"
             placeholder="Enter your full name"
@@ -477,14 +477,14 @@
       </div>
 
       <div class="form-group">
-        <label for="email">Email Address <span class="req">*</span></label>
+        <label>Email Address <span class="req">*</span></label>
         <div class="field-wrap">
           <input
-            id="email"
-            name="email"
+            id="f2"
+            name="field2"
             type="email"
             class="demo-input"
-            placeholder="Enter your email"
+            placeholder="Enter your email address"
             autocomplete="email"
             value="rahul@gmail.com"
           />
@@ -492,14 +492,14 @@
       </div>
 
       <div class="form-group">
-        <label for="phone">Phone Number <span class="req">*</span></label>
+        <label>Phone / Mobile <span class="req">*</span></label>
         <div class="field-wrap">
           <input
-            id="phone"
-            name="phone"
+            id="f3"
+            name="field3"
             type="tel"
             class="demo-input"
-            placeholder="Enter your phone number"
+            placeholder="Enter your contact number"
             autocomplete="tel"
             value="9876543210"
           />
@@ -507,21 +507,59 @@
       </div>
 
       <div class="form-group">
-        <label for="password">Password <span class="req">*</span></label>
+        <label>Government ID / PAN</label>
         <div class="field-wrap">
           <input
-            id="password"
-            name="password"
-            type="password"
+            id="f4"
+            name="field4"
+            type="text"
             class="demo-input"
-            placeholder="Enter your password"
-            value="MySecretPassword123"
+            placeholder="e.g. ABCDE1234F"
           />
         </div>
       </div>
 
       <div class="form-group">
-        <label for="country">Country</label>
+        <label>Application / Reference ID</label>
+        <div class="field-wrap">
+          <input
+            id="f5"
+            name="field5"
+            type="text"
+            class="demo-input"
+            placeholder="e.g. APP-2026-12345"
+          />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Password <span class="req">*</span></label>
+        <div class="field-wrap">
+          <input
+            id="f6"
+            name="field6"
+            type="text"
+            class="demo-input"
+            placeholder="Enter your password"
+          />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>City</label>
+        <div class="field-wrap">
+          <input
+            id="f7"
+            name="field7"
+            type="text"
+            class="demo-input"
+            placeholder="Enter your city"
+          />
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>Country</label>
         <div class="field-wrap">
           <select id="country" name="country" class="demo-select">
             <option value="">Select country</option>
@@ -533,14 +571,14 @@
       </div>
 
       <div class="form-group">
-        <label for="message">Message</label>
+        <label>Additional Notes / Message</label>
         <div class="field-wrap">
           <textarea
-            id="message"
-            name="message"
+            id="f8"
+            name="field8"
             class="demo-textarea"
-            placeholder="Enter your message"
-          >Please contact Rahul about his account.</textarea>
+            placeholder="Any additional information or notes"
+          >Please contact Rahul about his application.</textarea>
         </div>
       </div>
 

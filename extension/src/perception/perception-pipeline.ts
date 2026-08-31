@@ -102,6 +102,7 @@ export async function runPerceptionPipeline(
             id: element.id,
             placeholder: element.placeholder,
             ariaLabel: element.ariaLabel,
+            label: element.label,
             source: "value",
           });
 
@@ -126,6 +127,7 @@ export async function runPerceptionPipeline(
             id: element.id,
             placeholder: element.placeholder,
             ariaLabel: element.ariaLabel,
+            label: element.label,
             source: "text",
           });
 
@@ -150,6 +152,7 @@ export async function runPerceptionPipeline(
             id: element.id,
             placeholder: element.placeholder,
             ariaLabel: element.ariaLabel,
+            label: element.label,
             source: "placeholder",
           });
 
@@ -178,6 +181,7 @@ export async function runPerceptionPipeline(
             id: element.id,
             placeholder: element.placeholder,
             ariaLabel: element.ariaLabel,
+            label: element.label,
             source: "placeholder", // Accessibility labels are like placeholders
           });
 

@@ -106,6 +106,7 @@ export class PrivacyFirewall {
           id: element.id,
           placeholder: element.placeholder,
           ariaLabel: element.ariaLabel,
+          label: element.label,
           source
         }
       );
@@ -190,6 +191,11 @@ export class PrivacyFirewall {
             )
           : null,
 
+      /** Pass label through unsanitized — it is NOT a sensitive value,
+       *  it is the field descriptor used by the local LLM to understand
+       *  what data the field expects. */
+      label: element.label,
+
       selector: element.selector
     };
   }
@@ -212,7 +218,7 @@ export class PrivacyFirewall {
     // page titles can include names, account numbers, order IDs.
     const dummyPage: DOMElementInfo = {
       tag: "html", id: "", classes: [], type: null, name: "", text: "",
-      value: null, placeholder: null, ariaLabel: null, selector: ""
+      value: null, placeholder: null, ariaLabel: null, label: "", selector: ""
     };
     return {
       url: this.sanitizeText(page.url, dummyPage, "text"),
@@ -247,6 +253,51 @@ export class PrivacyFirewall {
       return text;
     }
 
+    let sanitized = text;
+
+    // 1. Catch bare email addresses anywhere in the text.
+    //    This must run FIRST before any prefixed patterns, otherwise the
+    //    bare email at the end of "my email is foo@gmail.com" is missed.
+    const bareEmailPattern = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+    sanitized = sanitized.replace(bareEmailPattern, (value: string) => this.getToken("EMAIL", value));
+
+    // 2. Prefixed patterns (fallback for emails already caught above,
+    //    this is a no-op since getToken is idempotent for the same value).
+    const emailWithPrefix = /\b(?:my\s+email\s+(?:is|:)?\s*|email\s+(?:is|:)?\s*|e-mail\s+(?:is|:)?\s*)([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/gi;
+    sanitized = sanitized.replace(emailWithPrefix, (_match, value: string) => this.getToken("EMAIL", value));
+
+    // 3. Named phone patterns (Indian + international).
+    const phoneWithPrefix = /\b(?:my\s+phone\s+(?:is|:)?\s*|phone\s+(?:is|:)?\s*|mobile\s+(?:is|:)?\s*)((?:\+?\d{1,3}[-.\s]?)?(?:\d{1,4}[-.\s]?){1,3}\d{1,4})/gi;
+    sanitized = sanitized.replace(phoneWithPrefix, (_match, value: string) => this.getToken("PHONE", value.replace(/\s+/g, "")));
+
+    // 4. Bare phone numbers (10-15 digit sequences) — caught without a prefix.
+    //    Only match standalone numbers (not part of other identifiers).
+    const barePhonePattern = /(?<![a-zA-Z0-9])(?:\+?\d{1,3}[-.\s]?)?(?:\d{1,4}[-.\s]?){2,}\d{1,4}(?![a-zA-Z0-9])/g;
+    sanitized = sanitized.replace(barePhonePattern, (value: string) => {
+      const digits = value.replace(/\D/g, "");
+      // Only treat as a phone if it has 10-15 digits
+      if (digits.length >= 10 && digits.length <= 15) {
+        return this.getToken("PHONE", digits);
+      }
+      return value; // not a phone number
+    });
+
+    // 5. Named person patterns.
+    const namePattern = /\b(?:my\s+name\s+(?:is|:)?\s*|i\s+am\s+|full\s+name\s+(?:is|:)?\s*)([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})/gi;
+    sanitized = sanitized.replace(namePattern, (_match, value: string) => this.getToken("PERSON", value));
+
+    // 6. Catch bare person names (2-4 capitalized words without a prefix).
+    //    Only matches proper names with title case on each word.
+    const bareNamePattern = /(?<![a-zA-Z])(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})(?![a-zA-Z])/g;
+    sanitized = sanitized.replace(bareNamePattern, (value: string) => {
+      // Skip if it looks like a company name or common word (≥4 words)
+      const words = value.trim().split(/\s+/);
+      if (words.length > 4) return value;
+      // Skip very short or very long
+      if (value.length < 4 || value.length > 60) return value;
+      return this.getToken("PERSON", value);
+    });
+
     const dummy: DOMElementInfo = {
       tag: "input",
       id: "phone",
@@ -257,11 +308,12 @@ export class PrivacyFirewall {
       value: null,
       placeholder: null,
       ariaLabel: null,
+      label: "",
       selector: ""
     };
 
     return this.sanitizeText(
-      text,
+      sanitized,
       dummy,
       "text"
     );

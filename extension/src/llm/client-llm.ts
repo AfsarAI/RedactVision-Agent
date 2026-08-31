@@ -12,7 +12,7 @@
  * It must NEVER be invoked as an action planner. The server LLM is
  * the sole planner (see llm-planner.ts and docs/ARCHITECTURE.md).
  *
- * Default model: onnx-community/Qwen2.5-1.5B-Instruct (q4)
+ * Default model: onnx-community/Qwen2.5-0.5B-Instruct (q4)
  * Loaded only when the privacy firewall has visual content to inspect.
  *
  * Privacy: nothing leaves the device. The model is loaded from
@@ -20,7 +20,7 @@
  * content is never sent anywhere.
  */
 
-export const DEFAULT_ON_DEVICE_MODEL = "onnx-community/Qwen2.5-1.5B-Instruct";
+export const DEFAULT_ON_DEVICE_MODEL = "onnx-community/Qwen2.5-0.5B-Instruct";
 
 export interface OnDeviceModelStatus {
   state: "idle" | "loading" | "ready" | "error" | "unavailable";

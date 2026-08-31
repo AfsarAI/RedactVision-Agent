@@ -5,6 +5,8 @@
  * Screenshots are processed locally and NEVER sent raw to the server.
  */
 
+import { captureVisibleTabViaBackground, isInExtensionContext } from "../llm/extension-bridge";
+
 export interface ScreenshotResult {
   /** Base64-encoded PNG image data */
   dataUrl: string;
@@ -24,46 +26,21 @@ export interface ScreenshotResult {
 export async function captureViewportScreenshot(): Promise<ScreenshotResult> {
   const timestamp = Date.now();
 
-  return new Promise((resolve, reject) => {
-    try {
-      // Check if we're in an extension context with chrome.tabs permission
-      if (typeof chrome !== "undefined" && chrome.tabs) {
-        chrome.tabs.captureVisibleTab(
-          { format: "png" },
-          (dataUrl: string | undefined) => {
-            if (chrome.runtime.lastError) {
-              reject(new Error(chrome.runtime.lastError.message));
-              return;
-            }
-            if (!dataUrl) {
-              reject(new Error("Failed to capture screenshot"));
-              return;
-            }
-
-            // Get image dimensions
-            const img = new Image();
-            img.onload = () => {
-              resolve({
-                dataUrl,
-                width: img.width,
-                height: img.height,
-                timestamp,
-                webgpuAvailable: checkWebGPU(),
-              });
-              URL.revokeObjectURL(img.src);
-            };
-            img.onerror = () => reject(new Error("Failed to decode screenshot"));
-            img.src = dataUrl;
-          }
-        );
-      } else {
-        // Fallback: use canvas-based capture (limited to visible content)
-        resolve(captureViewportCanvas());
-      }
-    } catch (error) {
-      reject(error);
+  if (isInExtensionContext()) {
+    const result = await captureVisibleTabViaBackground();
+    if (!result.ok || !result.dataUrl) {
+      throw new Error(result.error || "Failed to capture visible tab");
     }
-  });
+    return {
+      dataUrl: result.dataUrl,
+      width: result.width,
+      height: result.height,
+      timestamp,
+      webgpuAvailable: checkWebGPU(),
+    };
+  }
+
+  return captureViewportCanvas();
 }
 
 /**

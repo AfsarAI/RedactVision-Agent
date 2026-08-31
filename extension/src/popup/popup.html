@@ -104,6 +104,64 @@
         </form>
       </section>
 
+      <!-- ===== Local Profiles ===== -->
+      <section class="rv-section">
+        <div class="rv-section-label">Local personal profiles</div>
+        <div class="rv-section-detail">
+          Save and choose identities on this laptop. The profile store stays local and never leaves the browser.
+        </div>
+
+        <form class="rv-profile-form" id="rv-profile-form">
+          <div class="rv-field" id="rv-profile-field-name">
+            <label for="rv-profile-name">Name</label>
+            <input type="text" id="rv-profile-name" placeholder="Shrijal Gupta" autocomplete="name" />
+          </div>
+          <div class="rv-field" id="rv-profile-field-email">
+            <label for="rv-profile-email">Email</label>
+            <input type="email" id="rv-profile-email" placeholder="name@example.com" autocomplete="email" />
+          </div>
+          <div class="rv-field" id="rv-profile-field-phone">
+            <label for="rv-profile-phone">Phone</label>
+            <input type="tel" id="rv-profile-phone" placeholder="+91 98765 43210" autocomplete="tel" />
+          </div>
+          <div class="rv-field" id="rv-profile-field-address">
+            <label for="rv-profile-address">Address</label>
+            <input type="text" id="rv-profile-address" placeholder="Your address or city" autocomplete="street-address" />
+          </div>
+          <div class="rv-field" id="rv-profile-field-custom-key">
+            <label for="rv-profile-custom-key">Custom field</label>
+            <input type="text" id="rv-profile-custom-key" placeholder="PAN card, LinkedIn, application ID" autocomplete="off" />
+          </div>
+          <div class="rv-field" id="rv-profile-field-custom-value">
+            <label for="rv-profile-custom-value">Custom value</label>
+            <input type="text" id="rv-profile-custom-value" placeholder="Value kept encrypted locally" autocomplete="off" />
+          </div>
+          <button class="rv-btn rv-btn-primary rv-btn-full" id="rv-save-profile" type="submit">
+            Save profile
+          </button>
+        </form>
+
+        <div class="rv-profile-list" id="rv-profile-list"></div>
+      </section>
+
+      <!-- ===== Local AI Status ===== -->
+      <section class="rv-section">
+        <div class="rv-section-label">Local desktop AI</div>
+        <div class="rv-section-detail">
+          Optional lightweight on-device inference stays on this laptop and never sends personal data upstream.
+        </div>
+        <div class="rv-local-ai-card">
+          <div class="rv-local-ai-row">
+            <span class="rv-local-ai-label">Profile matcher</span>
+            <span class="rv-local-ai-chip rv-ok" id="rv-local-profile-status">Ready</span>
+          </div>
+          <div class="rv-local-ai-row">
+            <span class="rv-local-ai-label">Model package</span>
+            <span class="rv-local-ai-chip" id="rv-local-model-status">Checking…</span>
+          </div>
+        </div>
+      </section>
+
       <!-- ===== Theme ===== -->
       <section class="rv-section">
         <div class="rv-section-label">Appearance</div>

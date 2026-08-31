@@ -964,10 +964,10 @@ Completed:
   - Phase 9 — Local action validation (in `ActionExecutor.validate()`)
   - Phase 10 — Browser action executor (click/type/scroll/select/wait, token resolution)
   - Phase 11 — Multi-iteration feedback loop (max 5 iterations, respects `done` flag)
-  - Phase 12 — Reasoning backend abstraction with two real LLM paths:
+  - Phase 12 — Reasoning backend abstraction with one planner path:
     - **Server-side**: OpenAI-compatible (Groq by default) at `POST /llm/plan`
-    - **On-device**: Transformers.js + Qwen2.5-1.5B-Instruct (q4) with WebGPU auto-detect
-  - Settings UI: choose backend, configure URL/key, test connection
+    - **On-device privacy model**: Transformers.js + Qwen2.5-0.5B-Instruct (q4) with WebGPU/WASM auto-detect for local sanitization assistance only
+  - Settings UI: configure server URL, local model id, privacy controls, test connection
   - All 24 client smoke tests + 12 server smoke tests pass
 
 Current priority:

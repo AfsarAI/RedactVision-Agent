@@ -20,24 +20,26 @@
              v
         Content Script
              |
-             +--> DOM / safe element metadata
-             |
-             +--> visual state when required
+             +--> Visual page scan (screenshot + DOM)
              |
              v
      LOCAL PRIVACY FIREWALL
              |
-             +--> DOM semantic detector
-             +--> regex / heuristics
-             +--> optional local NER/OCR
-             +--> optional local CV (on-device perception model)
+             +--> Local LLM masker (Hugging Face model)
+             |       decides WHAT to mask and WHAT token to use
+             +--> Regex / heuristic detectors (fallback)
+             +--> Optional local NER/OCR
+             +--> Optional local CV (face / doc / card)
              |
              v
-     REDACTION + TOKENIZATION
+     SEMANTIC TOKENIZATION
              |
-             +--> sanitized context
-             |
+             +--> generic tokens: [FIELD_TYPE_N]
+             |    e.g. [NAME_01], [EMAIL_01], [PAN_CARD_01],
+             |         [APP_ID_01], [PHONE_01], [PASSWORD_01]
              +--> LOCAL TOKEN MAP (never transmitted)
+             +--> Prompt-profile extraction (name/email/etc
+             |    parsed from the user's natural-language prompt)
              |
              v
       === NETWORK BOUNDARY ===
@@ -46,7 +48,17 @@
        FASTAPI GATEWAY
              |
              v
-      SERVER-SIDE VLM/LLM
+      SERVER-SIDE LLM
+             |
+             |  receives:
+             |    - sanitized DOM (generic tokens)
+             |    - user_task
+             |    - [PROFILE:name] / [PROFILE:email] hints
+             |    - action_history
+             |  returns:
+             |    - structured JSON action (click/type/scroll/navigate/wait/done)
+             |    - value may be a literal, a page token [EMAIL_01],
+             |      or a local-profile token [PROFILE:pan_card]
              |
              v
        STRUCTURED ACTION
@@ -55,24 +67,16 @@
       === NETWORK BOUNDARY ===
              |
              v
-       LOCAL VALIDATOR
-             |
-             +--> schema check
-             +--> target check
-             +--> risk/policy check
-             +--> confirmation if required
+       LOCAL ACTION VALIDATOR / POLICY ENGINE
              |
              v
       LOCAL TOKEN RESOLUTION
-             |
+             |    1. Page-local token map (if value came from the page)
+             |    2. Session profile (auto-extracted from user prompt)
+             |    3. Selected saved profile
+             |    4. MISSING → prompt user in chat ← new
              v
       BROWSER EXECUTOR
-             |
-             +--> click
-             +--> type
-             +--> scroll
-             +--> navigate
-             +--> wait
              |
              v
           NEW PAGE STATE
@@ -80,64 +84,72 @@
              +--------> re-perceive / re-sanitize / re-reason
 ```
 
+## Perception Strategy (visual-first)
+
+The agent perceives the page **visually first** — it captures a screenshot of
+the visible viewport and scans it, exactly the way Perplexity Comet moves
+cursors, clicks, and types. DOM extraction is used only as a secondary signal
+to obtain stable selectors and form field semantics when available.
+
+The priority order is:
+
+1. **Visual scan** — screenshot the viewport; OCR + local LLM tells the agent
+   what fields are on the page and what each field asks for.
+2. **DOM semantics** — when present, use `input[name]`, `id`, `placeholder`,
+   `aria-label` to pick the _exact_ element to type into.
+3. **Semantic fallback** — if a selector does not match, locate the field by
+   label / surrounding text / form layout.
+4. **Coordinates** — last resort, only when nothing else works.
+
+The agent **moves the cursor, clicks, and types keyboard events** to simulate
+a real user. It does not call `el.value = …` directly except as a final
+mechanism after focus/selection; every action goes through the real input
+pipeline (`focus → selection → insertText → input/change events`).
+
 ## ⚠️ Implementation Status — Read Before Claiming Capability
 
 The architecture above is the **target**. The **current implementation** is partial. This section is the source of truth for what actually runs.
 
-### What is ACTIVE in the default content-script flow (`content.ts` lines 39–49)
+### What is ACTIVE in the default agent flow
 
 ```text
-extractPageDOM()  →  PrivacyFirewall.sanitizePage()  →  sanitizedPageDOM  →  /llm/plan
-                       ├── DOM semantics (Layer 1)
-                       └── regex/heuristics (Layer 2)
+1. Capture viewport screenshot (background tabs.captureVisibleTab)
+2. PerceptionPipeline(OCR / NER / CV with graceful fallback)
+3. LOCAL LLM masker (client-llm.ts / on-device-model.ts)
+      decides which values to mask and which generic token to assign
+4. PrivacyFirewall.sanitizePage()
+      replaces sensitive values with generic semantic tokens
+5. Build sanitized context (tokens + safe metadata + [PROFILE:*] hints)
+6. POST /llm/plan to server
+7. Server returns structured action
+8. Validate → resolve tokens locally → execute
 ```
 
-That is the entire active pipeline. DOM text only.
+The local LLM masker is the primary decision-maker for masking; regex /
+heuristic detectors remain as a fast fallback. If the local model cannot be
+loaded, the agent degrades to regex-only masking and continues.
 
-### What EXISTS in source but is NOT wired (modules available, not called)
+### Local Perception Modules
 
-| Layer | File | Library | Status |
-|---|---|---|---|
-| Screenshot capture | `perception/screenshot-capture.ts` | Chrome `tabs.captureVisibleTab` via background | Module only, not invoked |
-| Local OCR | `perception/ocr-engine.ts` | Tesseract.js | Module only, not invoked |
-| Local NER | `perception/ner-engine.ts` | Transformers.js | Module only, not invoked |
-| Local CV / Vision | `perception/cv-engine.ts` | Transformers.js (face / ID / card / signature detection) | Module only, not invoked |
-| Evidence fusion | `perception/perception-pipeline.ts` | Orchestrator: DOM + OCR + NER + CV in parallel | Module only, not invoked |
-| Sensitive data map | `perception/sensitive-data-map.ts` | Schema for fused output | Schema only, not populated by default |
-| Visual redaction | `perception/visual-redaction-engine.ts` | Blur / mask / box over sensitive image regions | Module only, not integrated |
-
-### Consequence (must not be hidden)
-
-Sensitive information rendered **only in images, canvas, screenshots, or other visual elements** (faces, cards, document photos, hidden rendered text, custom components) is **NOT detected or redacted** by the current default pipeline. Such data is not in the DOM, so the DOM-only path cannot see it.
-
-**Privacy invariant §4.1 ("raw sensitive data must not cross the network boundary") is currently enforced only for DOM-text PII, not for visual PII.** Until the perception pipeline is wired into `content.ts` (so that screenshot → OCR + CV + NER → fusion → visual redaction runs before any server call), this gap remains.
-
-### What MUST change to close the gap
-
-`content.ts` must invoke `PerceptionPipeline` before calling `/llm/plan`:
-
-1. `captureViewportScreenshot()` → image
-2. In parallel:
-   - DOM extraction + privacy firewall (current path)
-   - OCR over the screenshot
-   - CV detection (faces / cards / documents)
-   - NER over OCR text + DOM text
-3. `EvidenceFusion` produces a `SensitiveDataMap` keyed by region, type, confidence
-4. Apply visual redaction (blur/mask/box) over each region in the image
-5. Apply DOM masking for the same items
-6. Build a `SanitizedContext` containing sanitized DOM + sanitized image crops + safe OCR text
-7. Send only the sanitized context to the server
-
-Until that is implemented and tested end-to-end, every external claim (README, docs, demo) must label visual redaction as **partial / experimental**.
+| Layer                | File                                                  | Library                             | Status                               |
+| -------------------- | ----------------------------------------------------- | ----------------------------------- | ------------------------------------ |
+| Screenshot capture   | `perception/screenshot-capture.ts`                    | Background `tabs.captureVisibleTab` | Active                               |
+| Local OCR            | `perception/ocr-engine.ts`                            | Tesseract.js                        | Optional / graceful                  |
+| Local NER            | `perception/ner-engine.ts`                            | Transformers.js                     | Optional / graceful                  |
+| Local CV / Vision    | `perception/cv-engine.ts`                             | Transformers.js                     | Optional / graceful                  |
+| **Local LLM masker** | `llm/client-llm.ts` + `perception/on-device-model.ts` | Hugging Face model                  | Active — drives masking decisions    |
+| Evidence fusion      | `perception/perception-pipeline.ts`                   | Orchestrator                        | Active in `AgentSession.runPrompt()` |
+| Sensitive data map   | `perception/sensitive-data-map.ts`                    | Local schema                        | Populated locally; never sent raw    |
+| Visual redaction     | `privacy/visual-redaction-engine.ts`                  | Canvas blur/mask/pixelate           | Available                            |
 
 ## Planner Invariant
 
 The action-planning flow has **one** planner and **one** automatic fallback:
 
 1. **Server LLM** is the sole action planner. It receives only the
-   sanitized DOM (with semantic tokens like `[EMAIL_01]`) and returns
+   sanitized DOM (with generic tokens like `[PAN_CARD_01]`) and returns
    a structured action.
-2. If the server is unreachable, times out (> 5 s), returns a 4xx/5xx
+2. If the server is unreachable, times out (> 120 s), returns a 4xx/5xx
    status, or returns an unparseable action, the client
    **automatically** falls back to the local deterministic rule-based
    planner (`extension/src/agent/action-planner.ts`). The user does
@@ -150,7 +162,7 @@ The action-planning flow has **one** planner and **one** automatic fallback:
 
 The user-configurable Settings surface exposes only:
 
-- the server URL and (optional) API key for the planning endpoint;
+- the server URL (no API key — see below);
 - the on-device model id used by the Privacy Firewall.
 
 There is no "reasoning backend" toggle. There is no "force offline"
@@ -190,23 +202,34 @@ are `RV_PING_SERVER` and `RV_PLAN_ACTION` (see
 ## Trusted Zone
 
 The client owns:
+
 - raw DOM;
-- raw visual state;
-- sensitive values;
-- token map;
-- redaction decisions;
-- local policy;
-- final execution.
+- raw screenshots;
+- the complete local token map;
+- the local LLM model and its inference;
+- profile data (encrypted at rest);
+- all action execution.
 
-## Untrusted/remote zone
+The server may receive:
 
-The server receives only sanitized information.
+- sanitized DOM with generic tokens;
+- `[PROFILE:field]` capability tokens;
+- non-sensitive element metadata;
+- sanitized visual-region summaries;
+- user task text (after privacy filtering).
 
-The server may reason about tokens such as `[PERSON_01]` or `[EMAIL_01]`, but must not receive the token-to-original-value mapping.
+The server must **never** receive:
 
-## Grounding
+- the local token map;
+- original sensitive values;
+- raw screenshots containing PII;
+- profile values in the clear;
+- credentials or authentication secrets.
+
+## Grounding (visual-first)
 
 Use a hierarchy:
+
 1. stable DOM ID/selector;
 2. semantic element attributes;
 3. accessibility role/name;
@@ -215,13 +238,11 @@ Use a hierarchy:
 ## Visual Context
 
 Do not automatically send a full screenshot. Prefer:
+
 - sanitized structured DOM;
 - accessibility/role metadata;
 - bounding boxes;
 - OCR text;
 - sanitized image crops when necessary.
 
-**Current default behaviour:** Only sanitized DOM is sent. Screenshots are NOT captured and visual redaction is NOT applied unless the perception pipeline is explicitly invoked (which the current `content.ts` does NOT do).
-
 The visual workflow image supplied with the project illustrates this separation between the on-device trusted zone and the server zone.
-

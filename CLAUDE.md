@@ -81,49 +81,44 @@ extension/src/
     action-executor.ts        — validate + execute click/type/scroll/select/wait
   perception/                 # OCR / NER / CV engines + screenshot capture
     screenshot-capture.ts    — viewport screenshot capture
-    ocr-engine.ts            — Tesseract.js local OCR (NOT wired to default pipeline)
-    ner-engine.ts            — Transformers.js NER (NOT wired)
+    ocr-engine.ts            — Tesseract.js local OCR (wired with graceful fallback)
+    ner-engine.ts            — Transformers.js NER (wired with graceful fallback)
     cv-engine.ts             — Transformers.js vision (face/doc/card detection, graceful degradation)
-    perception-pipeline.ts   — Fusion orchestrator (DOM + OCR + NER + CV in parallel; NOT active by default)
-    sensitive-data-map.ts    — Unified SensitiveDataMap schema (NOT populated in default flow)
+    perception-pipeline.ts   — Fusion orchestrator (DOM + OCR + NER + CV in parallel)
+    sensitive-data-map.ts    — Unified SensitiveDataMap schema populated locally
   ui/chat-ui.ts              — floating 380×580 card; styles from extension bundle
   background/service-worker.ts
 ```
 
-### Current perception pipeline status (critical gap — must fix before claiming visual redaction)
+### Current perception pipeline status
 
-The **default content-script flow** (`content.ts` lines 39–49) runs only:
+The default chat agent flow runs:
 ```
-extractPageDOM() → PrivacyFirewall.sanitizePage() → sanitizedPageDOM → send to server
+extractPageDOM()
+  + background visible-tab capture when available
+  + perception-pipeline.ts (OCR / NER / CV with graceful fallback)
+  → PrivacyFirewall.sanitizePage()
+  → sanitized DOM + safe visual-region metadata
+  → send to server
 ```
-
-The following modules **exist in source but are NOT called** by the default pipeline:
 
 | Module | File | Status | Notes |
 |---|---|---|---|
-| Screenshot capture | `perception/screenshot-capture.ts` | Exists | Not invoked by default |
-| OCR | `perception/ocr-engine.ts` | Exists, not wired | Tesseract.js; detects text in images |
-| NER | `perception/ner-engine.ts` | Exists, not wired | Transformers.js; entity recognition |
-| CV / Vision | `perception/cv-engine.ts` | Exists, not wired | Face/doc/card detection |
-| Evidence fusion | `perception/perception-pipeline.ts` | Exists, not wired | Combines DOM + OCR + NER + CV |
-| Sensitive data map | `perception/sensitive-data-map.ts` | Schema exists, not populated | Fusion output format |
-| Visual redaction | `perception/visual-redaction-engine.ts` | Module exists, not integrated | Blur/mask sensitive image regions |
+| Screenshot capture | `perception/screenshot-capture.ts` | Wired | Routed through background `chrome.tabs.captureVisibleTab` |
+| OCR | `perception/ocr-engine.ts` | Wired/optional | Tesseract.js; degrades if unavailable |
+| NER | `perception/ner-engine.ts` | Wired/optional | Transformers.js; degrades if unavailable |
+| CV / Vision | `perception/cv-engine.ts` | Wired/optional | Face/doc/card detection with graceful degradation |
+| Evidence fusion | `perception/perception-pipeline.ts` | Active | Combines DOM + OCR + NER + CV |
+| Sensitive data map | `perception/sensitive-data-map.ts` | Active locally | Fusion output format |
+| Visual redaction | `privacy/visual-redaction-engine.ts` | Available | Blur/mask sensitive image regions; planner payload currently sends safe metadata |
 
-**Gap consequence:** Sensitive data rendered only in images/canvas/visual elements (faces, cards, document screenshots, hidden rendered text) is NOT detected or redacted before network transmission. Such PII could leak to the server.
+**Remaining limitation:** OCR/CV/NER depend on optional local packages/models and browser screenshot permissions. If they fail, the agent reports degraded visual scanning and continues with DOM sanitization. The server still never receives raw screenshots.
 
-**Architecture target (from your architecture prompt §3–§11):** DOM + CV + OCR + NER → Evidence Fusion → Sensitive Data Map → Local Redaction (DOM + visual) → Sanitized Context → Server.
+### Privacy token flow
 
-**Until the perception pipeline is wired into `content.ts`**, all documentation must label visual redaction as partial/experimental, and the privacy invariant "raw sensitive data must not cross the network boundary" is NOT enforced for visual content.
+`extractPageDOM()` → optional local visual perception → `PrivacyFirewall.sanitizePage()` replaces sensitive values in DOM text with semantic tokens (`[PERSON_01]`, `[EMAIL_01]`, etc.). Encrypted local profile values are exposed to the planner only as capability tokens such as `[PROFILE:name]`, `[PROFILE:email]`, or `[PROFILE:pan_card]`. The server never receives profile values, token maps, or raw screenshots.
 
-**Next step to close the gap:** Integrate `perception-pipeline.ts` into `content.ts` so that before any server call, the pipeline captures the screenshot, runs OCR/CV/NER, fuses evidence, and applies visual redaction (DOM masking + blur) to produce a fully sanitized payload.
-
-### Privacy token flow (DOM-only — visual redaction not yet wired)
-
-`extractPageDOM()` → `PrivacyFirewall.sanitizePage()` replaces sensitive values in DOM text with semantic tokens (`[PERSON_01]`, `[EMAIL_01]`, etc.). **Only `sanitizedPageDOM` crosses the network for DOM text.** `PrivacyFirewall.getLocalTokenMap()` produces `{token → original}` and stays in browser memory — never in server payload, never in extension messages to server, never logged.
-
-**Limitation:** This covers DOM text only. If sensitive data is rendered in images, canvas, or other visual elements, it is NOT currently detected or redacted before transmission. The perception pipeline modules (OCR, CV, NER) exist but are not wired into the default flow. See "Current perception pipeline status" above.
-
-When server returns a `type` action needing a token: `ActionExecutor` → `resolveToken()` locally → type original value locally.
+When server returns a `type` action needing a token: `ActionExecutor` resolves page tokens or `[PROFILE:field]` tokens locally, asks the user when missing/ambiguous, then types the original value locally.
 
 ### Server source tree
 
