@@ -313,20 +313,29 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
 
   // ---- Drag (pointer events) ----
   //
-  // The widget's "natural" position is bottom-right (CSS). The caller
-  // supplies a stored offset via setDragOffset() on mount, and we update
-  // the offset live during drag, firing onDragEnd() on release.
+  // The card is positioned via absolute left/top (set inline by the
+  // caller's morph/anchor logic). Dragging updates left/top directly,
+  // clamped to the viewport, and fires onDragEnd() with the final
+  // absolute position on release.
 
   let dragStart: { pointerX: number; pointerY: number; baseX: number; baseY: number } | null = null;
 
-  const applyOffset = (dx: number, dy: number) => {
+  const clampPos = (x: number, y: number): { x: number; y: number } => {
     // Clamp the card to the viewport so it can't be dragged offscreen.
     const maxX = Math.max(0, window.innerWidth - root.offsetWidth);
     const maxY = Math.max(0, window.innerHeight - root.offsetHeight);
-    const cdx = Math.max(-maxX, Math.min(dx, 0));
-    const cdy = Math.max(-maxY, Math.min(dy, 0));
-    root.style.setProperty("--rv-drag-x", `${cdx}px`);
-    root.style.setProperty("--rv-drag-y", `${cdy}px`);
+    return {
+      x: Math.min(Math.max(0, x), maxX),
+      y: Math.min(Math.max(0, y), maxY),
+    };
+  };
+
+  const applyPos = (x: number, y: number): void => {
+    const p = clampPos(x, y);
+    root.style.left = `${p.x}px`;
+    root.style.top = `${p.y}px`;
+    root.style.right = "auto";
+    root.style.bottom = "auto";
   };
 
   if (dragHandle) {
@@ -343,23 +352,20 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         /* ignore */
       }
       const rect = root.getBoundingClientRect();
-      // CSS positions the card via bottom/right. Compute the current
-      // offset from the natural bottom-right anchor.
-      const naturalLeft = window.innerWidth - rect.right;
-      const naturalTop = window.innerHeight - rect.bottom;
       dragStart = {
         pointerX: e.clientX,
         pointerY: e.clientY,
-        baseX: -naturalLeft, // convert anchor to "x offset from natural"
-        baseY: -naturalTop,
+        baseX: rect.left,
+        baseY: rect.top,
       };
     });
 
     dragHandle.addEventListener("pointermove", (e) => {
       if (!dragStart) return;
-      const dx = dragStart.baseX + (e.clientX - dragStart.pointerX);
-      const dy = dragStart.baseY + (e.clientY - dragStart.pointerY);
-      applyOffset(dx, dy);
+      applyPos(
+        dragStart.baseX + (e.clientX - dragStart.pointerX),
+        dragStart.baseY + (e.clientY - dragStart.pointerY)
+      );
     });
 
     const endDrag = (e: PointerEvent) => {
@@ -369,9 +375,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       } catch {
         /* ignore */
       }
-      // Read the final offset back from the live style.
-      const fx = parseFloat(root.style.getPropertyValue("--rv-drag-x") || "0");
-      const fy = parseFloat(root.style.getPropertyValue("--rv-drag-y") || "0");
+      // Read the final absolute position back from the live style.
+      const fx = parseFloat(root.style.left || "0");
+      const fy = parseFloat(root.style.top || "0");
       dragEndHandler?.({ dx: fx, dy: fy });
       dragStart = null;
     };
@@ -1154,8 +1160,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (root) root.classList.toggle("rv-minimized", minimized);
   }
 
-  function setDragOffset(dx: number, dy: number): void {
-    applyOffset(dx, dy);
+  function setDragOffset(x: number, y: number): void {
+    // Absolute viewport position (left/top), clamped on-screen.
+    applyPos(x, y);
   }
 
   function setSanitizedData(data: SanitizedDataSnapshot): void {
@@ -1606,32 +1613,4 @@ function escapeHtml(s: string): string {
 
 function escapeAttr(s: string): string {
   return escapeHtml(s);
-}
-
-/* ---- Logo helpers (used by content script for the launcher pill) ---- */
-
-/** Returns the extension's logo URL from the icons/ folder. */
-export function rvLogoUrl(): string {
-  return chrome.runtime.getURL("icons/logo.png");
-}
-
-/**
- * CSP-safe upgrade: if the browser can handle SVG, swap the `<img>` src
- * to an inline SVG data-URL so it scales cleanly. Falls back to the
- * supplied `fallback` (the PNG) when SVG rendering isn't possible.
- */
-export async function upgradeLogoUrl(
-  img: HTMLImageElement,
-  fallback: string
-): Promise<void> {
-  try {
-    const resp = await fetch(chrome.runtime.getURL("icons/logo.svg"));
-    if (!resp.ok) return; // no SVG — stick with PNG
-    const svg = await resp.text();
-    const blob = new Blob([svg], { type: "image/svg+xml" });
-    img.src = URL.createObjectURL(blob);
-  } catch {
-    // SVG not available — keep the PNG fallback
-    img.src = fallback;
-  }
 }

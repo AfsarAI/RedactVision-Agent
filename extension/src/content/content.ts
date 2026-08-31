@@ -347,20 +347,99 @@ function setStoredOffset(offset: { dx: number; dy: number }): void {
   }
 }
 
-async function openInPagePanel(): Promise<void> {
-  if (panel) {
-    // Already open — restore from minimized state and refocus.
-    panel.ui.setMinimized(false);
-    panel.root.style.display = "flex";
-    panel.ui.focusInput();
-    return;
-  }
+/* Launcher pill position — persisted per-hostname under its own key so
+ * it can never collide with the chat card's drag offset (OFFSET_KEY).
+ * Stored as absolute left/top viewport px (null = never dragged). */
+const LAUNCHER_POS_KEY = `rv_launcher_pos_${HOSTNAME}`;
 
-  await injectChatStyles();
-  await openInPagePanelAsync();
+function getLauncherPos(): Promise<{ x: number | null; y: number | null }> {
+  return new Promise((resolve) => {
+    try {
+      chrome.storage.local.get(LAUNCHER_POS_KEY, (data: Record<string, unknown>) => {
+        try {
+          const o = data?.[LAUNCHER_POS_KEY] as { x?: unknown; y?: unknown } | undefined;
+          if (
+            o &&
+            typeof o.x === "number" &&
+            typeof o.y === "number" &&
+            Number.isFinite(o.x) &&
+            Number.isFinite(o.y)
+          ) {
+            resolve({ x: o.x, y: o.y });
+          } else {
+            resolve({ x: null, y: null });
+          }
+        } catch (err) {
+          console.error("[RedactVision] Content: Error reading launcher position:", err);
+          resolve({ x: null, y: null });
+        }
+      });
+    } catch (err) {
+      console.error("[RedactVision] Content: Failed to get launcher position:", err);
+      resolve({ x: null, y: null });
+    }
+  });
 }
 
-async function openInPagePanelAsync(): Promise<void> {
+function setLauncherPos(x: number, y: number): void {
+  try {
+    chrome.storage.local.set({ [LAUNCHER_POS_KEY]: { x, y } });
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Morph state machine — one source of truth for the launcher/panel pair.
+ *  closed → opening → open → closing → closed. "opening"/"closing"
+ *  swallow rapid clicks so the UI can never end up with two panels, a
+ *  hidden launcher, or a stuck intermediate state. */
+type MorphState = "closed" | "opening" | "open" | "closing";
+let morphState: MorphState = "closed";
+
+function getLauncherEl(): HTMLElement | null {
+  return document.getElementById("rv-agent-indicator");
+}
+
+/**
+ * Open the chat panel by MORPHING it out of the floating launcher.
+ *
+ * - The panel element (and its AgentSession) is created ONCE and kept
+ *   alive across minimize/restore, so conversation, activity feed and
+ *   sanitized data survive the morph. Only a full close (×) destroys it.
+ * - The panel is anchored to the launcher's exact on-screen position
+ *   (smart quadrant: expands toward the side with the most space).
+ */
+async function openInPagePanel(): Promise<void> {
+  if (morphState !== "closed") return;
+  morphState = "opening";
+
+  const launcher = getLauncherEl();
+  // 0–160ms: press feedback on the launcher (grow + glow) before the morph.
+  if (launcher) {
+    launcher.classList.add("rv-press");
+    setTimeout(() => launcher.classList.remove("rv-press"), 180);
+  }
+
+  try {
+    if (!panel) {
+      await injectChatStyles();
+      await buildPanel();
+      if (!panel) {
+        morphState = "closed";
+        return;
+      }
+    }
+    // Show the panel (it is display:none after a morph-close).
+    const root = panel.root as HTMLElement;
+    root.style.display = "flex";
+    playOpenMorph();
+  } catch (err) {
+    console.error("[RedactVision] Content: Failed to open panel:", err);
+    morphState = "closed";
+  }
+}
+
+async function buildPanel(): Promise<void> {
   // The overlay is just a positioning wrapper. The chat card inside
   // it is what the user sees and drags. We make the overlay cover the
   // page so we can layer the card on top of it (the card has
@@ -378,10 +457,6 @@ async function openInPagePanelAsync(): Promise<void> {
   document.body.appendChild(overlay);
 
   const ui = buildChatUI(overlay);
-
-  // Restore persisted drag offset.
-  const offset = await getStoredOffset();
-  ui.setDragOffset(offset.dx, offset.dy);
 
   // Load planner config.
   const config: PlannerConfig = await loadPlannerConfig();
@@ -562,11 +637,12 @@ async function openInPagePanelAsync(): Promise<void> {
   });
 
   ui.onMinimize(() => {
-    ui.setMinimized(true);
+    // "-" triggers the REVERSE morph: panel collapses into the launcher.
+    morphClose();
   });
 
   ui.onClose(() => {
-    closeInPagePanel();
+    destroyPanel();
   });
 
   ui.onDragEnd((off) => {
@@ -582,11 +658,131 @@ async function openInPagePanelAsync(): Promise<void> {
   ui.focusInput();
 }
 
-function closeInPagePanel(): void {
+/**
+ * Animate the panel growing OUT of the launcher's exact position.
+ * The panel is positioned so its corner nearest the launcher stays
+ * fixed (transform-origin), then scales 0.09 → 1 with a spring easing
+ * while the launcher fades/scales away in parallel — the two read as
+ * ONE object transforming.
+ */
+function playOpenMorph(): void {
   if (!panel) return;
-  panel.session.cancel();
-  panel.overlay.remove();
-  panel = null;
+  const root = panel.root as HTMLElement;
+  const launcher = getLauncherEl();
+
+  const anchor = computeMorphAnchor(root, launcher);
+  panel.ui.setDragOffset(anchor.x, anchor.y);
+  root.style.transformOrigin = anchor.origin;
+
+  root.classList.add("rv-morph", "rv-morph-start");
+  // Flush styles so the start state is committed before transitioning.
+  void root.offsetWidth;
+  requestAnimationFrame(() => {
+    root.classList.remove("rv-morph-start");
+    if (launcher) launcher.classList.add("rv-hidden");
+    finishOnTransition(root, () => {
+      root.classList.remove("rv-morph");
+      root.style.transformOrigin = "";
+      morphState = "open";
+    });
+    panel?.ui.focusInput();
+  });
+}
+
+/** Panel left/top + transform-origin derived from the launcher position.
+ *  Launcher bottom-right → panel expands up/left; bottom-left → up/right;
+ *  top-right → down/left; top-left → down/right. Always viewport-clamped. */
+function computeMorphAnchor(
+  root: HTMLElement,
+  launcher: HTMLElement | null
+): { x: number; y: number; origin: string } {
+  const w = root.offsetWidth || 380;
+  const h = root.offsetHeight || 580;
+  const margin = 8;
+  const rect = launcher?.getBoundingClientRect();
+  const cx = rect ? rect.left + rect.width / 2 : window.innerWidth - 48;
+  const cy = rect ? rect.top + rect.height / 2 : window.innerHeight - 48;
+
+  const expandLeft = cx > window.innerWidth / 2;
+  const expandUp = cy > window.innerHeight / 2;
+  let x = expandLeft ? cx - w : cx;
+  let y = expandUp ? cy - h : cy;
+  x = Math.min(Math.max(margin, x), Math.max(margin, window.innerWidth - w - margin));
+  y = Math.min(Math.max(margin, y), Math.max(margin, window.innerHeight - h - margin));
+  // Origin = the panel corner that sits at the launcher.
+  const origin = `${expandLeft ? "100%" : "0%"} ${expandUp ? "100%" : "0%"}`;
+  return { x, y, origin };
+}
+
+/** Resolve when the morph transition actually ends (timeout fallback so
+ *  a missed transitionend can never strand the state machine). */
+function finishOnTransition(el: HTMLElement, done: () => void): void {
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    el.removeEventListener("transitionend", onEnd);
+    done();
+  };
+  const onEnd = (e: TransitionEvent): void => {
+    if (e.target === el && e.propertyName === "transform") finish();
+  };
+  el.addEventListener("transitionend", onEnd);
+  setTimeout(finish, 600);
+}
+
+/**
+ * Minimize ("-"): collapse the panel back INTO the floating launcher.
+ * The panel is hidden (NOT destroyed) — session, conversation, activity
+ * feed and sanitized data all survive. The launcher reappears at exactly
+ * the position it had before opening (its left/top is never touched).
+ */
+function morphClose(): void {
+  if (morphState !== "open" || !panel) return;
+  morphState = "closing";
+  const root = panel.root as HTMLElement;
+  const launcher = getLauncherEl();
+
+  // Origin = panel corner nearest the launcher so the shrink lands on it.
+  const r = root.getBoundingClientRect();
+  const lr = launcher?.getBoundingClientRect();
+  const cx = lr ? lr.left + lr.width / 2 : r.left + r.width / 2;
+  const cy = lr ? lr.top + lr.height / 2 : r.top + r.height / 2;
+  root.style.transformOrigin = `${cx > r.left + r.width / 2 ? "100%" : "0%"} ${
+    cy > r.top + r.height / 2 ? "100%" : "0%"
+  }`;
+
+  // Sequence matters: commit the full-size state with the transition
+  // enabled FIRST, then add the start (pill-sized) state — otherwise
+  // both land in the same style flush and the shrink never animates.
+  root.classList.add("rv-morph");
+  void root.offsetWidth; // flush
+  root.classList.add("rv-morph-start");
+  // The launcher reappears near the END of the shrink so the two read
+  // as one object handing over, not two separate elements.
+  setTimeout(() => launcher?.classList.remove("rv-hidden"), 300);
+  finishOnTransition(root, () => {
+    root.style.display = "none";
+    root.classList.remove("rv-morph", "rv-morph-start");
+    root.style.transformOrigin = "";
+    launcher?.classList.remove("rv-hidden");
+    morphState = "closed";
+  });
+}
+
+/** Fully tear down the panel + session (× button, settings off, teardown). */
+function destroyPanel(): void {
+  if (panel) {
+    panel.session.cancel();
+    panel.overlay.remove();
+    panel = null;
+  }
+  morphState = "closed";
+  getLauncherEl()?.classList.remove("rv-hidden", "rv-press");
+}
+
+function closeInPagePanel(): void {
+  destroyPanel();
 }
 
 /* ============================================================
@@ -634,7 +830,7 @@ function injectAgentIndicator(): void {
       -webkit-user-select: none;
       touch-action: none;         /* so touch-drag doesn't scroll the page */
       cursor: grab;
-      transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+      transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s, opacity 0.18s ease;
     }
     #rv-agent-indicator img {
       width: 100%;
@@ -663,6 +859,24 @@ function injectAgentIndicator(): void {
       cursor: grabbing;
       transition: none;
       box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5), 0 0 0 2px rgba(91, 107, 255, 0.5);
+    }
+    /* Press feedback (0-160ms of the morph): slight grow + glow. The
+       size stays 56x56 — only transform/box-shadow change. */
+    #rv-agent-indicator.rv-press {
+      transform: scale(1.12);
+      cursor: grabbing;
+      box-shadow:
+        0 16px 40px rgba(0, 0, 0, 0.55),
+        0 0 0 3px rgba(91, 107, 255, 0.55),
+        0 0 22px rgba(91, 107, 255, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    }
+    /* Hidden while the panel is morphed open (the launcher has become
+       the panel header). opacity, not display, so the fade is smooth. */
+    #rv-agent-indicator.rv-hidden {
+      opacity: 0;
+      pointer-events: none;
+      transform: scale(0.5);
     }
   `;
   document.head.appendChild(style);
@@ -737,32 +951,50 @@ function injectAgentIndicator(): void {
   const finishIndicatorDrag = (e: PointerEvent) => {
     if (!dragState || dragState.pointerId !== e.pointerId) return;
     const wasClick = !dragState.moved;
+    const endLeft = dragState.baseLeft;
     dragState = null;
     indicator.classList.remove("rv-dragging");
-    if (wasClick) toggleLauncherPanel();
+    if (wasClick) {
+      toggleLauncherPanel();
+    } else {
+      // Persist the dragged absolute position for this hostname under
+      // the launcher's OWN key (never the chat card's OFFSET_KEY).
+      const px = parseFloat(indicator.style.left || `${endLeft}`);
+      const py = parseFloat(indicator.style.top || "0");
+      if (Number.isFinite(px) && Number.isFinite(py)) setLauncherPos(px, py);
+    }
   };
 
   indicator.addEventListener("pointerup", finishIndicatorDrag);
   indicator.addEventListener("pointercancel", finishIndicatorDrag);
+
+  // Restore a previously dragged position (persisted per-hostname).
+  // Values are absolute left/top px, clamped to the current viewport.
+  void getLauncherPos().then(({ x, y }) => {
+    if (x === null || y === null) return; // never dragged — keep default corner
+    const maxX = Math.max(0, window.innerWidth - indicator.offsetWidth);
+    const maxY = Math.max(0, window.innerHeight - indicator.offsetHeight);
+    indicator.style.left = `${Math.min(Math.max(0, x), maxX)}px`;
+    indicator.style.top = `${Math.min(Math.max(0, y), maxY)}px`;
+    indicator.style.right = "auto";
+    indicator.style.bottom = "auto";
+  });
 }
 
 /**
- * Launcher pill click → open/toggle the chat widget.
- *  - No panel yet   → open it.
- *  - Card minimized → restore + focus.
- *  - Card open      → close it (same toggle feel as a launcher button).
+ * Launcher pill click → morph open / morph close.
+ *  - closed  → open (panel grows out of the launcher).
+ *  - open    → minimize (panel collapses back into the launcher).
+ *  - opening/closing → ignored (rapid-click guard; the state machine
+ *    always lands on a terminal state via finishOnTransition).
  */
 function toggleLauncherPanel(): void {
-  if (!panel) {
-    void openInPagePanel();
+  if (morphState === "open") {
+    morphClose();
     return;
   }
-  const card = panel.root as HTMLElement;
-  if (card.classList.contains("rv-minimized")) {
-    void openInPagePanel();
-  } else {
-    closeInPagePanel();
-  }
+  if (morphState !== "closed") return;
+  void openInPagePanel();
 }
 
 /* ============================================================

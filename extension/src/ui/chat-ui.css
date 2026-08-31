@@ -72,18 +72,67 @@
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
   z-index: 2147483646;
-  transform: translate(var(--rv-drag-x, 0px), var(--rv-drag-y, 0px));
-  transition: box-shadow 0.2s ease, transform 0.15s ease;
-  animation: rv-card-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: box-shadow 0.2s ease;
 }
 
 .rv-chat:hover {
   box-shadow: var(--rv-shadow-card-hover);
 }
 
-@keyframes rv-card-in {
-  from { opacity: 0; transform: translate(var(--rv-drag-x, 0px), calc(20px + var(--rv-drag-y, 0px))); }
-  to   { opacity: 1; transform: translate(var(--rv-drag-x, 0px), var(--rv-drag-y, 0px)); }
+/* ============================================================
+ *  LAUNCHER → PANEL MORPH TRANSITION
+ *  One continuous object: the floating pill grows into the chat
+ *  card (open) and the card shrinks back into the pill (close).
+ *  Transform/opacity/border-radius only — GPU-friendly.
+ * ============================================================ */
+.rv-chat.rv-morph {
+  animation: none;
+  will-change: transform, opacity;
+  transition:
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.32s ease,
+    border-radius 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.45s ease;
+}
+/* Start state: pill-sized circle at the launcher's exact position
+   (position comes from inline left/top + transform-origin). */
+.rv-chat.rv-morph.rv-morph-start {
+  transform: scale(0.09);
+  opacity: 0;
+  border-radius: 50%;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+/* Panel content fades/slides in slightly after the shape settles. */
+.rv-chat.rv-morph > * {
+  transition: opacity 0.26s ease 0.16s, transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.16s;
+}
+.rv-chat.rv-morph.rv-morph-start > * {
+  opacity: 0;
+  transform: translateY(8px);
+  transition-delay: 0s;
+}
+
+/* Reduced motion: skip the scale morph — quick fade only. */
+@media (prefers-reduced-motion: reduce) {
+  .rv-chat.rv-morph {
+    transition: opacity 0.12s ease;
+  }
+  .rv-chat.rv-morph.rv-morph-start {
+    transform: none;
+    border-radius: var(--rv-radius);
+    opacity: 0;
+  }
+  .rv-chat.rv-morph > * {
+    transition: none;
+  }
+}
+
+/* Small viewports: panel must always fit, no horizontal overflow. */
+@media (max-width: 480px) {
+  .rv-chat {
+    width: min(380px, calc(100vw - 16px));
+    height: min(580px, calc(100vh - 72px));
+  }
 }
 
 /* When the launcher anchors the card to a specific position, the
