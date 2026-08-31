@@ -22,6 +22,7 @@ import {
   buildChatUI,
   ChatUIHandles,
   RedactionSummary,
+  ValidationError,
   rvLogoUrl,
   upgradeLogoUrl,
 } from "../ui/chat-ui";
@@ -32,6 +33,98 @@ import {
 } from "../llm/llm-planner";
 
 console.log("[RedactVision] Content script initialized");
+
+/* ============================================================
+ *  Client-side form validation
+ *  Validates user input BEFORE calling LLM to prevent fake
+ *  "server offline" errors when the real issue is invalid input.
+ * ============================================================ */
+
+interface ValidationResult {
+  valid: boolean;
+  error?: ValidationError;
+}
+
+function validateUserInput(prompt: string): ValidationResult {
+  const lower = prompt.toLowerCase();
+
+  // Email validation
+  if (lower.includes("email") || lower.includes("e-mail")) {
+    const emailFields = document.querySelectorAll<HTMLInputElement>(
+      'input[type="email"], input[name*="email" i], input[id*="email" i], input[placeholder*="email" i]'
+    );
+
+    for (const field of emailFields) {
+      const value = field.value.trim();
+      if (value) {
+        // Email regex pattern
+        const emailPattern = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z]{2,}$/i;
+        if (!emailPattern.test(value)) {
+          return {
+            valid: false,
+            error: {
+              field: "Email field",
+              userValue: value,
+              issue: `"${value}" is not a valid email format`,
+              expected: "Valid email format (e.g., user@example.com)"
+            }
+          };
+        }
+      }
+    }
+  }
+
+  // Password validation
+  if (lower.includes("password") || lower.includes("pass")) {
+    const passwordFields = document.querySelectorAll<HTMLInputElement>(
+      'input[type="password"]'
+    );
+
+    for (const field of passwordFields) {
+      const value = field.value;
+      if (value && value.length < 6) {
+        return {
+          valid: false,
+          error: {
+            field: "Password field",
+            userValue: `${value.length} characters`,
+            issue: "Password is too short",
+            expected: "At least 6 characters"
+          }
+        };
+      }
+    }
+  }
+
+  // Phone validation
+  if (lower.includes("phone") || lower.includes("mobile") || lower.includes("tel")) {
+    const phoneFields = document.querySelectorAll<HTMLInputElement>(
+      'input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[name*="mobile" i]'
+    );
+
+    for (const field of phoneFields) {
+      const value = field.value.trim();
+      if (value) {
+        // Extract digits only
+        const digits = value.replace(/\D/g, "");
+        if (digits.length < 10 || digits.length > 15) {
+          return {
+            valid: false,
+            error: {
+              field: "Phone field",
+              userValue: value,
+              issue: `Phone number has ${digits.length} digits`,
+              expected: "10-15 digits (e.g., 1234567890)"
+            }
+          };
+        }
+      }
+    }
+  }
+
+  // All validations passed
+  return { valid: true };
+}
 
 /* ============================================================
  *  Dashboard settings (shared with the popup via chrome.storage)
@@ -332,6 +425,17 @@ async function openInPagePanelAsync(): Promise<void> {
   ui.onSend(async (text) => {
     ui.setInputValue("");
     ui.setInputEnabled(false);
+
+    // CLIENT-SIDE VALIDATION — check form inputs BEFORE calling LLM
+    const validation = validateUserInput(text);
+    if (!validation.valid && validation.error) {
+      // Show validation error card instead of calling LLM
+      ui.showValidationError(validation.error);
+      ui.setStatus("error", "Invalid input");
+      ui.setInputEnabled(true);
+      return;
+    }
+
     ui.setStatus("thinking", "Working…");
     try {
       const outcome = await session.runPrompt(text);
@@ -391,7 +495,31 @@ async function openInPagePanelAsync(): Promise<void> {
           : "Working…"
       );
     } catch (err) {
-      ui.setStatus("error", "Error");
+      const message = err instanceof Error ? err.message : String(err);
+      const isContextInvalidated =
+        message.includes("Extension context invalidated") ||
+        message.includes("context invalidated") ||
+        (err instanceof DOMException && err.name === "InvalidStateError");
+
+      if (isContextInvalidated) {
+        ui.showSystemError({
+          type: "extension_context_invalidated",
+          title: "Extension update ho gaya hai",
+          message: "Yeh page purane extension version se connected hai. Page refresh karein (F5/Cmd+R) taaki extension dobara connect ho sake.",
+          actionLabel: "🔄 Refresh Page",
+          actionType: "refresh",
+        });
+        ui.setStatus("error", "Reconnect needed");
+      } else {
+        ui.showSystemError({
+          type: "runtime_error",
+          title: "Kuch galat ho gaya",
+          message: `Error: ${message}. Please dobara try karein ya page refresh karein.`,
+          actionLabel: "🔄 Retry",
+          actionType: "retry",
+        });
+        ui.setStatus("error", "Error");
+      }
       console.error("[ContentScript] Agent error:", err);
     } finally {
       sessionSignal.cancelled = false;

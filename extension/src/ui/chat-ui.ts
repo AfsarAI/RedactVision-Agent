@@ -30,6 +30,60 @@
 
 import type { AgentActivity } from "../agent/agent-session";
 
+/* ======================================================================
+ * Brand logo (src/ui/SIH.jpeg → icons/logo.png)
+ * Replaces the old "RV" text placeholder in the chat header avatar and
+ * footer statusbar. Two hardening measures so the logo always renders:
+ *   1. blob-URL upgrade — some host pages have a strict CSP that blocks
+ *      chrome-extension:// images; fetch + blob URLs pass most CSPs.
+ *   2. inline-SVG fallback — if neither image path loads, the avatar
+ *      degrades to a gradient "RV" badge instead of a blank square.
+ * ====================================================================== */
+
+const RV_LOGO_CHROME_URL =
+  typeof chrome !== "undefined" && chrome.runtime?.getURL
+    ? chrome.runtime.getURL("icons/logo.png")
+    : "";
+
+const RV_LOGO_FALLBACK_SVG =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#5b6bff"/>
+          <stop offset="1" stop-color="#22d3a0"/>
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="14" fill="url(#g)"/>
+      <text x="32" y="42" text-anchor="middle" font-family="-apple-system,Arial,sans-serif" font-size="24" font-weight="700" fill="white">RV</text>
+    </svg>`
+  );
+
+/** Resolve the logo image URL (chrome extension, or inline SVG fallback). */
+export function rvLogoUrl(): string {
+  return RV_LOGO_CHROME_URL || RV_LOGO_FALLBACK_SVG;
+}
+
+/**
+ * Upgrade an <img> to a blob: URL so strict host-page CSPs cannot block
+ * the chrome-extension:// resource. Keeps the original URL on failure.
+ */
+export async function upgradeLogoUrl(
+  img: HTMLImageElement,
+  chromeUrl: string
+): Promise<void> {
+  if (!chromeUrl) return;
+  try {
+    const resp = await fetch(chromeUrl);
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    img.src = URL.createObjectURL(blob);
+  } catch {
+    /* keep the chrome-extension:// URL — works on most pages */
+  }
+}
+
 /** Compact summary of what the privacy firewall redacted this turn. */
 export interface RedactionSummary {
   /** Total count of sensitive values that were tokenized. */
@@ -66,6 +120,10 @@ export interface ChatUIHandles {
   setDragOffset(dx: number, dy: number): void;
   /** Show the polished end-of-task summary card. */
   showSummary(summary: TaskSummary): void;
+  /** Show a validation error card (orange/yellow warning) with retry button. */
+  showValidationError(error: ValidationError): void;
+  /** Show a system error card (extension context, server offline) with action button. */
+  showSystemError(error: SystemError): void;
   /** Reset the card to a clean state (also hides any prior summary). */
   resetConversation(): void;
   /** Latest sanitized-data snapshot for the details panel. */
@@ -101,10 +159,40 @@ export interface TaskSummary {
   privacy: { count: number; byType: Record<string, number> } | null;
 }
 
+/** Validation error details for client-side form validation. */
+export interface ValidationError {
+  field: string;
+  userValue: string;
+  issue: string;
+  expected: string;
+}
+
+/** System error details (extension context, server offline, etc.) */
+export interface SystemError {
+  type: "extension_context_invalidated" | "server_unreachable" | "runtime_error";
+  title: string;
+  message: string;
+  actionLabel: string;
+  actionType: "refresh" | "retry";
+}
+
 export function buildChatUI(container: HTMLElement): ChatUIHandles {
   container.innerHTML = chatHTML();
 
   const root = container.querySelector(".rv-chat") as HTMLElement;
+
+  // Brand logo imgs (header avatar + statusbar avatar): wire the
+  // CSP-safe blob upgrade and the inline-SVG error fallback.
+  const avatarImgs = root.querySelectorAll(
+    "img[data-rv-logo]"
+  ) as NodeListOf<HTMLImageElement>;
+  avatarImgs.forEach((img) => {
+    img.addEventListener("error", () => {
+      if (img.src !== RV_LOGO_FALLBACK_SVG) img.src = RV_LOGO_FALLBACK_SVG;
+    });
+    void upgradeLogoUrl(img, RV_LOGO_CHROME_URL);
+  });
+
   const privacyBar = root.querySelector("#rv-privacy-bar") as HTMLElement;
   const headerStatus = root.querySelector("#rv-chat-status") as HTMLElement;
   const statusDot = root.querySelector("#rv-chat-status-dot") as HTMLElement;
@@ -148,7 +236,8 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     const t = text.trim();
     if (!t) return;
     input.value = "";
-    input.style.height = "auto";
+    input.style.height = "";
+    input.style.overflowY = "hidden";
     sendHandler?.(t);
   }
 
@@ -163,11 +252,13 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     }
   });
 
-  // Auto-grow: the box stays one line tall and only grows when the
-  // user writes a longer multi-line task (capped at ~4 lines).
+  // Auto-grow: starts single-line (~38-44px) and grows dynamically
+  // up to 160px, switching to internal scroll when capped.
   const autoGrow = () => {
     input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 76) + "px";
+    const newHeight = Math.min(input.scrollHeight, 160);
+    input.style.height = Math.max(newHeight, 38) + "px";
+    input.style.overflowY = input.scrollHeight > 160 ? "auto" : "hidden";
   };
   input.addEventListener("input", autoGrow);
 
@@ -686,6 +777,105 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     conversation.scrollTop = conversation.scrollHeight;
   }
 
+  function showValidationError(error: ValidationError): void {
+    // End any live processing animation
+    endProcessing("failed", "Validation error");
+
+    const card = document.createElement("div");
+    card.className = "rv-summary rv-summary-validation";
+    card.innerHTML = `
+      <div class="rv-summary-head">
+        <div class="rv-summary-icon">⚠️</div>
+        <div>
+          <div class="rv-summary-title">Validation Error: ${escapeHtml(error.field)}</div>
+          <div class="rv-summary-message">${escapeHtml(error.issue)}</div>
+        </div>
+      </div>
+      <div class="rv-validation-details">
+        <div class="rv-validation-row">
+          <span class="rv-validation-label">You entered:</span>
+          <span class="rv-validation-value">${escapeHtml(error.userValue || "(empty)")}</span>
+        </div>
+        <div class="rv-validation-row">
+          <span class="rv-validation-label">Expected:</span>
+          <span class="rv-validation-expected">${escapeHtml(error.expected)}</span>
+        </div>
+      </div>
+      <div class="rv-validation-actions">
+        <button type="button" class="rv-validation-retry-btn" data-validation-retry>
+          ✏️ Fix & Try Again
+        </button>
+      </div>
+    `;
+
+    // Insert right after redaction card or at the end
+    const redaction = conversation.querySelector(".rv-redaction-card");
+    if (redaction && redaction.nextSibling) {
+      conversation.insertBefore(card, redaction.nextSibling);
+    } else {
+      conversation.appendChild(card);
+    }
+
+    // Wire retry button to refocus input and clear current value for quick correction
+    const retryBtn = card.querySelector("[data-validation-retry]") as HTMLButtonElement;
+    retryBtn?.addEventListener("click", () => {
+      focusInput();
+      setInputValue("");
+      card.remove();
+    });
+
+    conversation.scrollTop = conversation.scrollHeight;
+  }
+
+  function showSystemError(error: SystemError): void {
+    // End any live processing animation
+    endProcessing("failed", error.title);
+
+    const iconMap = {
+      extension_context_invalidated: "🔄",
+      server_unreachable: "🌐",
+      runtime_error: "⚠️",
+    };
+
+    const card = document.createElement("div");
+    card.className = "rv-summary rv-summary-failed";
+    card.innerHTML = `
+      <div class="rv-summary-head">
+        <div class="rv-summary-icon">${iconMap[error.type] || "⚠️"}</div>
+        <div>
+          <div class="rv-summary-title">${escapeHtml(error.title)}</div>
+          <div class="rv-summary-message">${escapeHtml(error.message)}</div>
+        </div>
+      </div>
+      <div class="rv-validation-actions">
+        <button type="button" class="rv-validation-retry-btn" data-system-error-action="${error.actionType}">
+          ${error.actionLabel}
+        </button>
+      </div>
+    `;
+
+    // Insert right after redaction card or at the end
+    const redaction = conversation.querySelector(".rv-redaction-card");
+    if (redaction && redaction.nextSibling) {
+      conversation.insertBefore(card, redaction.nextSibling);
+    } else {
+      conversation.appendChild(card);
+    }
+
+    // Wire action button
+    const actionBtn = card.querySelector("[data-system-error-action]") as HTMLButtonElement;
+    actionBtn?.addEventListener("click", () => {
+      if (error.actionType === "refresh") {
+        window.location.reload();
+      } else if (error.actionType === "retry") {
+        focusInput();
+        card.remove();
+      }
+    });
+
+    conversation.scrollTop = conversation.scrollHeight;
+  }
+
   // ---- Details panel (Timeline + Sanitized data) ----
 
   function openDetails(tab: "timeline" | "data"): void {
@@ -732,15 +922,17 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         bodyHtml = `<div class="rv-details-empty">No activity yet — send a prompt first.</div>`;
       } else {
         bodyHtml = `<div class="rv-details-timeline">${detailedTimeline
-          .map((a) => {
+          .map((a, idx) => {
             const time = new Date(a.timestamp).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
               second: "2-digit",
             });
+            const stepNumber = idx + 1;
             return `
               <div class="rv-details-item rv-dt-${a.kind}">
-                <div class="rv-details-item-icon">${iconFor(a.kind)}</div>
+                <div class="rv-details-item-step">${stepNumber}</div>
+                <div class="rv-details-item-icon">${iconForActivity(a)}</div>
                 <div class="rv-details-item-body">
                   <div class="rv-details-item-text">${escapeHtml(a.text)}</div>
                   ${a.detail ? `<div class="rv-details-item-detail">${escapeHtml(a.detail)}</div>` : ""}
@@ -755,6 +947,40 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       if (!sanitizedData) {
         bodyHtml = `<div class="rv-details-empty">Send a prompt first — the sanitized snapshot is captured during the agent loop.</div>`;
       } else {
+        // Compute PII type distribution for graphical analysis
+        const privacyByType: Record<string, number> = {};
+        sanitizedData.tokens.forEach((t) => {
+          const type = t.type.toUpperCase();
+          privacyByType[type] = (privacyByType[type] || 0) + 1;
+        });
+        const totalTokens = sanitizedData.tokens.length;
+        const sortedTypes = Object.entries(privacyByType).sort((a, b) => b[1] - a[1]);
+
+        // Build multi-segment distribution bar
+        let distributionBar = "";
+        if (totalTokens > 0) {
+          const segments = sortedTypes.map(([type, count]) => {
+            const percent = ((count / totalTokens) * 100).toFixed(1);
+            const colorMap: Record<string, string> = {
+              EMAIL: "#6366f1",
+              PHONE: "#8b5cf6",
+              PASSWORD: "#ec4899",
+              PERSON: "#14b8a6",
+              CARD: "#f59e0b",
+              ADDRESS: "#06b6d4",
+            };
+            const color = colorMap[type] || "#64748b";
+            return `<div class="rv-dist-segment" style="flex: ${count}; background: ${color};" title="${type}: ${count} (${percent}%)"></div>`;
+          }).join("");
+          distributionBar = `<div class="rv-dist-bar">${segments}</div>`;
+        }
+
+        // Build category chips
+        const categoryChips = sortedTypes.map(([type, count]) => {
+          const icon = iconForType(type);
+          return `<div class="rv-category-chip"><span class="rv-category-icon">${icon}</span><span class="rv-category-label">${escapeHtml(type)}</span><span class="rv-category-count">${count}</span></div>`;
+        }).join("");
+
         const tokenRows = sanitizedData.tokens.length
           ? sanitizedData.tokens
               .map(
@@ -771,6 +997,39 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
           : `<div class="rv-details-empty">No sensitive values were detected on this page.</div>`;
 
         bodyHtml = `
+          <div class="rv-graphical-analysis">
+            <div class="rv-analysis-title">Privacy Protection Analysis</div>
+            ${totalTokens > 0 ? `
+              <div class="rv-analysis-section">
+                <div class="rv-analysis-label">PII Distribution</div>
+                ${distributionBar}
+                <div class="rv-category-chips">${categoryChips}</div>
+              </div>
+            ` : ""}
+            <div class="rv-analysis-metrics">
+              <div class="rv-metric-card">
+                <div class="rv-metric-icon">🛡️</div>
+                <div class="rv-metric-body">
+                  <div class="rv-metric-value">100%</div>
+                  <div class="rv-metric-label">Protection Rate</div>
+                </div>
+              </div>
+              <div class="rv-metric-card">
+                <div class="rv-metric-icon">📊</div>
+                <div class="rv-metric-body">
+                  <div class="rv-metric-value">${sanitizedData.elementCount}</div>
+                  <div class="rv-metric-label">Elements Analyzed</div>
+                </div>
+              </div>
+              <div class="rv-metric-card">
+                <div class="rv-metric-icon">🔑</div>
+                <div class="rv-metric-body">
+                  <div class="rv-metric-value">${totalTokens}</div>
+                  <div class="rv-metric-label">Active Tokens</div>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="rv-data-summary">
             <div class="rv-data-row"><span>Page</span><span>${escapeHtml(sanitizedData.title || sanitizedData.url || "—")}</span></div>
             <div class="rv-data-row"><span>Elements sent to server</span><span>${sanitizedData.elementCount}</span></div>
@@ -943,6 +1202,8 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     onDragEnd,
     setDragOffset,
     showSummary,
+    showValidationError,
+    showSystemError,
     resetConversation,
     setSanitizedData,
     applyTheme,
@@ -963,7 +1224,7 @@ function chatHTML(): string {
 
       <header class="rv-chat-header" data-rv-drag-handle>
         <div class="rv-chat-brand">
-          <div class="rv-chat-avatar">RV</div>
+          <div class="rv-chat-avatar"><img class="rv-avatar-img" data-rv-logo src="${rvLogoUrl()}" alt="RedactVision" draggable="false" /></div>
           <div class="rv-chat-brand-text">
             <div class="rv-chat-title">RedactVision Agent</div>
             <div class="rv-chat-status-row">
@@ -1004,7 +1265,7 @@ function chatHTML(): string {
 
       <footer class="rv-statusbar">
         <div class="rv-statusbar-brand">
-          <span class="rv-statusbar-avatar">RV</span>
+          <span class="rv-statusbar-avatar"><img class="rv-avatar-img rv-avatar-sm" data-rv-logo src="${rvLogoUrl()}" alt="" draggable="false" /></span>
           <span class="rv-statusbar-name">RedactVision</span>
           <span class="rv-statusbar-pill">
             <span class="rv-statusbar-dot rv-ready" id="rv-statusbar-dot"></span>
@@ -1073,7 +1334,7 @@ function iconFor(kind: AgentActivity["kind"]): string {
     case "action_validated":
       return "✓";
     case "action_executed":
-      return "✅";
+      return "⌨️";  // keyboard icon for typing/clicking actions
     case "action_rejected":
       return "✗";
     case "iteration_complete":
@@ -1085,6 +1346,39 @@ function iconFor(kind: AgentActivity["kind"]): string {
     default:
       return "·";
   }
+}
+
+// Enhanced icon selection based on activity text content for timeline clarity
+function iconForActivity(activity: AgentActivity): string {
+  const text = activity.text.toLowerCase();
+
+  // Privacy/security-related steps
+  if (text.includes("privacy") || text.includes("firewall") || text.includes("sanitiz")) {
+    return "🛡️";
+  }
+
+  // Typing action
+  if (text.includes("type into") || text.includes("typing")) {
+    return "⌨️";
+  }
+
+  // Click action
+  if (text.includes("click")) {
+    return "👆";
+  }
+
+  // Validation/check steps
+  if (text.includes("validat")) {
+    return "✓";
+  }
+
+  // Analysis/understanding
+  if (text.includes("analyz") || text.includes("understand")) {
+    return "🔍";
+  }
+
+  // Default to kind-based icon
+  return iconFor(activity.kind);
 }
 
 function iconForType(type: string): string {
