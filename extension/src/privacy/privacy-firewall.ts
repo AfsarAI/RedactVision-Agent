@@ -37,6 +37,21 @@ export class PrivacyFirewall {
     PERSON: 0
   };
 
+  /*
+   * Master switch wired to the popup's "Auto-redact" toggle.
+   * When disabled, text passes through UNCHANGED (user's explicit
+   * choice — raw PII may then leave the device).
+   */
+  private enabled = true;
+
+  public setEnabled(value: boolean): void {
+    this.enabled = value;
+  }
+
+  public isEnabled(): boolean {
+    return this.enabled;
+  }
+
   private getToken(
     type: SensitiveEntityType,
     originalValue: string
@@ -75,11 +90,7 @@ export class PrivacyFirewall {
   private sanitizeText(
     text: string,
     element: DOMElementInfo,
-    source:
-      | "text"
-      | "value"
-      | "placeholder"
-      | "ariaLabel"
+    source: "text" | "value" | "placeholder" | "ariaLabel"
   ): string {
     if (!text) {
       return text;
@@ -188,10 +199,25 @@ export class PrivacyFirewall {
       typeof extractPageDOM
     >
   ): SanitizedPageDOM {
+    if (!this.enabled) {
+      return {
+        url: page.url,
+        title: page.title,
+        elements:
+          page.elements as unknown as SanitizedElement[]
+      };
+    }
+    // A1 fix: URL and title must also pass through sanitizeText.
+    // Query strings frequently carry PII (e.g. ?email=foo@bar), and
+    // page titles can include names, account numbers, order IDs.
+    const dummyPage: DOMElementInfo = {
+      tag: "html", id: "", classes: [], type: null, name: "", text: "",
+      value: null, placeholder: null, ariaLabel: null, selector: ""
+    };
     return {
-      url: page.url,
+      url: this.sanitizeText(page.url, dummyPage, "text"),
 
-      title: page.title,
+      title: this.sanitizeText(page.title, dummyPage, "text"),
 
       elements:
         page.elements.map(
@@ -201,6 +227,44 @@ export class PrivacyFirewall {
             )
         )
     };
+  }
+
+  /*
+   * Sanitize free-form text (e.g. the user's chat prompt) before it
+   * leaves the device. Free text has no field context, so we use a
+   * permissive dummy context that enables the phone detector.
+   * We deliberately do NOT enable the password detector — it would
+   * tokenize the entire prompt as one big password.
+   *
+   * Without this, a prompt like "fill email: abc@gmail.com" reaches
+   * the server raw, and providers with content moderation (e.g.
+   * OpenRouter) reject it → the agent shows "offline" (HTTP 502).
+   */
+  public sanitizeFreeText(
+    text: string
+  ): string {
+    if (!text || !this.enabled) {
+      return text;
+    }
+
+    const dummy: DOMElementInfo = {
+      tag: "input",
+      id: "phone",
+      classes: [],
+      type: null,
+      name: "phone",
+      text: "",
+      value: null,
+      placeholder: null,
+      ariaLabel: null,
+      selector: ""
+    };
+
+    return this.sanitizeText(
+      text,
+      dummy,
+      "text"
+    );
   }
 
   /*
