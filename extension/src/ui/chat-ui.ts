@@ -736,6 +736,8 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   function showSummary(summary: TaskSummary): void {
     // Replace live processing (if still up) with the summary card.
     endProcessing(summary.phase, summary.message);
+    // A fresh summary invalidates the previous details view.
+    closeDetails();
 
     // Build the summary card.
     const isOk = summary.phase === "completed";
@@ -1000,6 +1002,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         <button type="button" class="rv-details-tab ${detailsTab === "data" ? "rv-active" : ""}" data-tab="data">
           Sanitized data
         </button>
+        <button type="button" class="rv-details-hide" data-details-hide aria-label="Hide details">
+          Hide details <span class="rv-details-hide-chevron">▾</span>
+        </button>
         <button type="button" class="rv-details-close" data-details-close aria-label="Close details">×</button>
       </div>
     `;
@@ -1137,6 +1142,8 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     detailsPanel.querySelectorAll<HTMLButtonElement>(".rv-details-tab").forEach((b) => {
       b.addEventListener("click", () => openDetails(b.dataset.tab as "timeline" | "data"));
     });
+    // Labeled "Hide details" pill + the small × both collapse the panel.
+    detailsPanel.querySelector("[data-details-hide]")?.addEventListener("click", closeDetails);
     detailsPanel.querySelector("[data-details-close]")?.addEventListener("click", closeDetails);
   }
 
@@ -1255,6 +1262,11 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       currentProcessing.el.remove();
       currentProcessing = null;
     }
+    // Collapse the details panel and drop the stale toggle reference —
+    // otherwise the panel keeps overlaying the card with old content
+    // and the summary toggle points at a removed node.
+    closeDetails();
+    summaryToggleBtn = null;
     detailedTimeline = [];
     if (conversation) {
       conversation.innerHTML = emptyStateHTML();

@@ -338,7 +338,7 @@
   color: var(--rv-text-dim);
   font-size: 14px;
   line-height: 1;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .rv-icon-btn:hover {
@@ -526,7 +526,7 @@
   min-width: 0;
 }
 .rv-msg.rv-expandable {
-  cursor: pointer;
+  cursor: pointer !important;
   user-select: none;
 }
 .rv-msg-chevron {
@@ -753,7 +753,7 @@
   padding: 7px 10px;
   font-size: 11px;
   color: var(--rv-text-dim);
-  cursor: pointer;
+  cursor: pointer !important;
   user-select: none;
   background: rgba(91, 107, 255, 0.04);
   transition: background 0.15s;
@@ -1121,7 +1121,10 @@
   font-size: 11px;
   color: #c7d2fe;
   font-weight: 600;
-  cursor: pointer;
+  /* !important: the card is injected into the host page (no shadow
+     root), so host CSS like `button { cursor: default }` can win —
+     force the hand pointer on every interactive control. */
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
@@ -1175,7 +1178,7 @@
   padding: 7px 14px;
   font-size: 11.5px;
   font-weight: 600;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: all 0.15s ease;
 }
 .rv-validation-retry-btn:hover {
@@ -1291,7 +1294,7 @@
   color: white;
   border: none;
   border-radius: 10px;
-  cursor: pointer;
+  cursor: pointer !important;
   font-size: 14px;
   transition: transform 0.1s, box-shadow 0.15s, opacity 0.15s;
   flex-shrink: 0;
@@ -1316,7 +1319,7 @@
   font-size: 11.5px;
   font-weight: 600;
   font-family: inherit;
-  cursor: pointer;
+  cursor: pointer !important;
   flex-shrink: 0;
   transition: background 0.15s, color 0.15s, opacity 0.15s;
 }
@@ -1507,7 +1510,7 @@
   border: 1px solid var(--rv-border);
   border-radius: 9px;
   font-size: 13px;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
 }
 .rv-sb-btn:hover {
@@ -1594,7 +1597,7 @@
   font-weight: 600;
   font-family: inherit;
   color: var(--rv-text-dim);
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s;
 }
 .rv-qs-seg button.rv-active {
@@ -1603,7 +1606,7 @@
   box-shadow: 0 1px 6px rgba(91, 107, 255, 0.4);
 }
 .rv-qs-toggle-row {
-  cursor: pointer;
+  cursor: pointer !important;
 }
 .rv-qs-toggle-row input {
   display: none;
@@ -1684,7 +1687,7 @@
   font-weight: 600;
   font-family: inherit;
   color: #c7d2fe;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, border-color 0.15s, transform 0.1s, color 0.15s;
 }
 .rv-chip-suggest:hover {
@@ -1943,7 +1946,7 @@
   font-weight: 600;
   font-family: inherit;
   color: var(--rv-text-dim);
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s;
 }
 .rv-details-tab:hover {
@@ -1967,12 +1970,49 @@
   border-radius: 6px;
   color: var(--rv-text-dim);
   font-size: 15px;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s;
 }
 .rv-details-close:hover {
   background: var(--rv-warn-soft);
   color: var(--rv-warn);
+}
+
+/* Labeled "Hide details" pill — the summary toggle underneath the
+   overlay can never be clicked, so the open panel carries its own
+   clearly-labeled control to collapse back to the summary card. */
+.rv-details-hide {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(91, 107, 255, 0.16);
+  border: 1px solid rgba(91, 107, 255, 0.40);
+  border-radius: 8px;
+  padding: 5px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #c7d2fe;
+  cursor: pointer !important;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.rv-details-hide:hover {
+  background: rgba(91, 107, 255, 0.30);
+  border-color: rgba(91, 107, 255, 0.60);
+  color: white;
+}
+.rv-details-hide .rv-details-hide-chevron {
+  font-size: 9px;
+  transition: transform 0.2s;
+}
+.rv-details-hide:hover .rv-details-hide-chevron {
+  transform: rotate(180deg);
+}
+/* When the hide pill sits in the tab bar it owns the right edge;
+   the × stays right beside it instead of pushing it away. */
+.rv-details-tabs .rv-details-hide + .rv-details-close {
+  margin-left: 0;
 }
 
 .rv-details-body {

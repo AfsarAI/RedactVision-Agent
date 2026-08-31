@@ -195,11 +195,38 @@ export class LLMPlanner {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (timer) clearTimeout(timer);
+      // Distinguish a lost extension context from a genuinely
+      // unreachable server — the UI shows "refresh the page" for the
+      // former and "Server agent offline" for the latter.
+      if (isContextInvalidatedMsg(msg)) {
+        return {
+          action: null,
+          error: msg,
+          errorCode: "extension_context_invalidated",
+        };
+      }
       return { action: null, error: msg, errorCode: "server_unreachable" };
     }
     if (timer) clearTimeout(timer);
 
     if (!result.ok || !result.body) {
+      // The bridge attaches a structured error body for extension-side
+      // failures (e.g. extension_context_invalidated / runtime_error).
+      // Preserve that code instead of mislabeling it via
+      // classifyHttpError(0) → "server_unreachable".
+      const bodyCode = (
+        result.body as unknown as { code?: string } | null
+      )?.code;
+      if (bodyCode) {
+        return {
+          action: null,
+          error:
+            (result.body as unknown as { message?: string }).message ||
+            result.error ||
+            `Server HTTP ${result.status}`,
+          errorCode: bodyCode,
+        };
+      }
       return {
         action: null,
         error: result.error || `Server HTTP ${result.status}`,
@@ -248,6 +275,20 @@ function classifyHttpError(status: number): string {
   if (status === 502) return "llm_unavailable";
   if (status === 0) return "server_unreachable";
   return "server_error";
+}
+
+/**
+ * True when an error message indicates the content script is talking
+ * to a dead extension context (after the extension was reloaded or
+ * updated). These must NOT be classified as "server_unreachable" —
+ * the server may be perfectly healthy; only a page refresh fixes it.
+ */
+function isContextInvalidatedMsg(msg: string): boolean {
+  return (
+    msg.includes("Extension context invalidated") ||
+    msg.includes("context invalidated") ||
+    msg.includes("message port closed")
+  );
 }
 
 /**

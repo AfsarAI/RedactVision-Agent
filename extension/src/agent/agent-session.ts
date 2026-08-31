@@ -351,6 +351,19 @@ export class AgentSession {
                 "Check that the server is running and has at least one LLM provider configured.",
               meta: { errorCode: planResult.errorCode },
             });
+          } else if (planResult.errorCode === "runtime_error") {
+            // Extension-side runtime failure (not the server's fault) —
+            // surface the real message instead of "Planner rejected task".
+            phase = "failed";
+            reason = planResult.message || "Extension runtime error";
+            this.push({
+              kind: "error",
+              text: "Extension error",
+              detail:
+                planResult.message ||
+                "The extension hit an unexpected error. Try again, or reload the extension and refresh the page.",
+              meta: { errorCode: "runtime_error" },
+            });
           } else {
             phase = "failed";
             reason = planResult.errorCode
