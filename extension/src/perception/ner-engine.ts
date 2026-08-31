@@ -103,9 +103,6 @@ export class NEREngine {
 
   private async _initialize(): Promise<void> {
     try {
-      console.log("[NEREngine] Initializing Transformers.js pipeline...");
-      console.log(`[NEREngine] Loading model: ${this.modelId}`);
-
       // Dynamic import for code splitting
       const { pipeline, env } = await import("@huggingface/transformers");
 
@@ -125,12 +122,10 @@ export class NEREngine {
 
       this.isInitialized = true;
       console.log("[NEREngine] Transformers.js pipeline initialized");
-    } catch (error) {
-      console.error("[NEREngine] Failed to initialize Transformers.js:", error);
-      // Don't throw - allow fallback to regex-based NER
-      console.warn("[NEREngine] Falling back to regex-based NER");
+    } catch {
+      // Clean fallback to deterministic regex-based NER without red console error traces
       this.isInitialized = true;
-      this.pipeline = null; // Will use fallback
+      this.pipeline = null;
     }
   }
 

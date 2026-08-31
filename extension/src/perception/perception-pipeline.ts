@@ -294,7 +294,7 @@ export async function runPerceptionPipeline(
           return { success: true, time: ocrTime };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.error("[PerceptionPipeline] OCR failed:", message);
+          console.warn("[PerceptionPipeline] OCR unavailable on this page:", message);
           errors.push({ detector: "ocr", error: message });
           return { success: false, time: 0 };
         }
@@ -347,7 +347,7 @@ export async function runPerceptionPipeline(
           return { success: true, time: cvTime };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          console.error("[PerceptionPipeline] CV failed:", message);
+          console.warn("[PerceptionPipeline] CV unavailable on this page:", message);
           errors.push({ detector: "cv", error: message });
           return { success: false, time: 0 };
         }

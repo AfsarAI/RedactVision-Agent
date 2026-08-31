@@ -63,9 +63,6 @@ export class CVEngine {
 
   private async _initialize(): Promise<void> {
     try {
-      console.log("[CVEngine] Initializing Transformers.js vision pipeline...");
-      console.log(`[CVEngine] Model reference: ${this.modelId}`);
-
       // Dynamic import for code splitting — same pattern as NEREngine
       const { pipeline, env } = await import("@huggingface/transformers");
 
@@ -85,12 +82,10 @@ export class CVEngine {
 
       this.isInitialized = true;
       console.log("[CVEngine] Vision pipeline initialized");
-    } catch (error) {
-      console.error("[CVEngine] Vision pipeline failed to initialize:", error);
+    } catch {
       // Graceful degradation: allow pipeline to continue without CV
       this.isInitialized = true;
       this.pipeline = null;
-      console.warn("[CVEngine] Running without visual detection — relying on DOM/OCR/NER only");
     }
   }
 
