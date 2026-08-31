@@ -55,6 +55,16 @@ logger = logging.getLogger("redactvision_server.llm")
 # ----- Module-level singleton (lazy) -----
 _llm: Optional[MultiProviderLLM] = None
 
+# ----- Provider reliability counters (C6) -----
+# Simple in-process counters so we can see which provider produces
+# clean JSON vs parse failures. Surfaced via /llm/health.
+_parse_stats: dict[str, dict[str, int]] = {}
+
+
+def _record_parse(provider: str, ok: bool) -> None:
+    stats = _parse_stats.setdefault(provider, {"success": 0, "parse_failure": 0})
+    stats["success" if ok else "parse_failure"] += 1
+
 
 def _get_llm() -> MultiProviderLLM:
     global _llm
@@ -105,6 +115,8 @@ def health() -> dict:
         "providers": _available_providers(),
         "timeout_seconds": float(os.environ.get("LLM_TIMEOUT_SECONDS", "30.0")),
         "retries_per_provider": int(os.environ.get("LLM_RETRIES_PER_PROVIDER", "1")),
+        "total_budget_seconds": float(os.environ.get("LLM_TOTAL_BUDGET_SECONDS", "100")),
+        "parse_stats": _parse_stats,
     }
 
 
@@ -149,22 +161,95 @@ def plan_with_llm(
     logger.info("LLM request → Groq → OpenRouter → OmniRoute (bounded)")
 
     llm = _get_llm()
-    raw_text, provider_name = llm.generate(messages)
 
-    logger.info("LLM response ← provider=%s (%.50s...)", provider_name, raw_text[:50])
+    # Some free models (notably via the openrouter/free router) sometimes
+    # answer with a moderation notice or chain-of-thought prose instead
+    # of JSON ("User Safety: safe", "Here's a thinking process: ...").
+    # Retry ONCE with an explicit "JSON only" instruction before giving
+    # up, so a transient bad reply doesn't surface as a 502 "offline".
+    last_error: Exception | None = None
+    for attempt in range(2):
+        raw_text, provider_name = llm.generate(messages)
+        logger.info(
+            "LLM response ← provider=%s attempt=%d (%.50s...)",
+            provider_name, attempt + 1, raw_text[:50],
+        )
+        try:
+            action = _parse_json(raw_text)
+            _record_parse(provider_name, True)
+            logger.info("LLM action parsed: %s (provider=%s)", action, provider_name)
+            return action, provider_name
+        except ValueError as exc:
+            _record_parse(provider_name, False)
+            last_error = exc
+            logger.warning(
+                "LLM output was not JSON (attempt %d): %.120s",
+                attempt + 1, raw_text,
+            )
+            messages = messages + [
+                {"role": "assistant", "content": raw_text[:500]},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your last response was not valid JSON. "
+                        "Return ONLY the JSON object this time — a single "
+                        "JSON object matching the action schema. No prose, "
+                        "no safety notices, no markdown, no thinking process."
+                    ),
+                },
+            ]
 
-    action = _parse_json(raw_text)
-    logger.info("LLM action parsed: %s (provider=%s)", action, provider_name)
-    return action, provider_name
+    raise ValueError(f"LLM output is not JSON after retry: {last_error}")
 
 
 # ----- Parsing helpers (kept verbatim from original) -----
 
+def _extract_json_objects(text: str) -> list[str]:
+    """
+    Scan the text and extract every balanced top-level {...} block.
+    Unlike a greedy regex, this correctly handles nested braces and
+    braces inside string literals, and won't grab a giant span that
+    happens to start at the first '{' and end at the last '}'.
+    """
+    blocks: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    blocks.append(text[start : i + 1])
+                    start = -1
+    return blocks
+
+
 def _parse_json(text: str) -> dict:
     """
-    Parse the model output. The provider should return JSON (we set
-    response_format=json_object where supported), but we are defensive:
-    strip code fences and find the first {...} block.
+    Parse the model output defensively:
+      1. Strip markdown fences and try a direct json.loads.
+      2. Otherwise, extract every balanced {...} block and prefer the
+         one that actually looks like an action (has an "action" key).
+         This avoids grabbing an unrelated dict (e.g. a DOM element
+         example the model echoed inside its reasoning).
     """
     text = text.strip()
     # Strip ```json ... ``` fences if any
@@ -172,13 +257,32 @@ def _parse_json(text: str) -> dict:
     text = re.sub(r"\s*```$", "", text)
 
     try:
-        return json.loads(text)
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
     except json.JSONDecodeError:
-        # Find the first JSON object in the text
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if not m:
-            raise ValueError(f"LLM output is not JSON: {text[:200]}")
-        return json.loads(m.group(0))
+        pass
+
+    candidates: list[dict] = []
+    for block in _extract_json_objects(text):
+        try:
+            obj = json.loads(block)
+            if isinstance(obj, dict):
+                candidates.append(obj)
+        except json.JSONDecodeError:
+            continue
+
+    if not candidates:
+        raise ValueError(f"LLM output is not JSON: {text[:200]}")
+
+    # Prefer an object that has the "action" key (the planner schema).
+    for obj in candidates:
+        if "action" in obj:
+            return obj
+
+    # Fall back to the last candidate (models usually put the final
+    # answer at the end of their output).
+    return candidates[-1]
 
 
 def validate_action_shape(action: Any) -> dict:

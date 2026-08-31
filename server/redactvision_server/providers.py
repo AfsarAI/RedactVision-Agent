@@ -153,7 +153,9 @@ class GroqProvider(Provider):
                 "model": model,
                 "messages": messages,
                 "temperature": 0.1,
-                "max_tokens": 1024,
+                # Tight budget: a single action JSON needs < 200 tokens.
+                # A small cap leaves no room for chain-of-thought dumps.
+                "max_tokens": 500,
             }
             # openai/gpt-oss-* routed through Groq rejects response_format.
             if not model.startswith("openai/"):
@@ -230,7 +232,13 @@ class OpenRouterProvider(Provider):
                 "model": model,
                 "messages": messages,
                 "temperature": 0.1,
-                "max_tokens": 1024,
+                # Tight budget: a single action JSON needs < 200 tokens.
+                "max_tokens": 500,
+                # Force structured JSON where the model supports it. Some
+                # free models/routers reject this parameter with a 400 —
+                # in that case we retry the same model WITHOUT it rather
+                # than blacklisting the model outright.
+                "response_format": {"type": "json_object"},
             }
             try:
                 with httpx.Client(timeout=timeout) as client:
@@ -240,6 +248,15 @@ class OpenRouterProvider(Provider):
                         "HTTP-Referer": "https://redactvision.local",
                         "X-Title": "RedactVision Agent",
                     })
+                    if resp.status_code == 400 and "response_format" in resp.text:
+                        # Model doesn't support response_format — retry bare.
+                        payload.pop("response_format", None)
+                        resp = client.post(url, json=payload, headers={
+                            "Authorization": f"Bearer {key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://redactvision.local",
+                            "X-Title": "RedactVision Agent",
+                        })
             except httpx.TimeoutException:
                 last_error = _err(408, f"OpenRouter timeout for {model}")
                 continue
@@ -307,7 +324,7 @@ class OmniRouteProvider(Provider):
             "model": model,
             "messages": messages,
             "temperature": 0.1,
-            "max_tokens": 1024,
+            "max_tokens": 500,
             "stream": False,  # OmniRoute streams SSE by default; we want a JSON response
         }
         headers = {"Content-Type": "application/json"}

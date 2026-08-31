@@ -24,11 +24,17 @@ from __future__ import annotations
 
 import os
 import logging
+import time
 from typing import Optional, List, Tuple
 
 from .providers import PROVIDERS, Provider
 
 logger = logging.getLogger("redactvision_server.multi_provider_llm")
+
+# Total wall-clock budget for ONE planning request across the whole
+# provider chain. The client aborts at 120s, so the server must finish
+# (or give up) BEFORE that. Default 100s leaves a safety margin.
+TOTAL_BUDGET_SECONDS = float(os.environ.get("LLM_TOTAL_BUDGET_SECONDS", "100"))
 
 
 class MultiProviderLLM:
@@ -65,12 +71,26 @@ class MultiProviderLLM:
                 which providers were tried and why each failed.
         """
         attempts: list[str] = []  # human-readable audit trail
+        started = time.monotonic()
 
         for provider in self.providers:
             if not provider.available():
                 attempts.append(f"{provider.name}: unavailable (no key)")
                 logger.info("Provider %s unavailable — skipping", provider.name)
                 continue
+
+            # Respect the total budget: if we've already burned most of
+            # it, don't start another provider — the client would have
+            # aborted by the time a slow chain finished.
+            elapsed = time.monotonic() - started
+            if elapsed > TOTAL_BUDGET_SECONDS * 0.6 and attempts:
+                logger.warning(
+                    "Total LLM budget %.0fs nearly exhausted (%.1fs used) — "
+                    "stopping chain before %s",
+                    TOTAL_BUDGET_SECONDS, elapsed, provider.name,
+                )
+                attempts.append(f"{provider.name}: skipped (total budget)")
+                break
 
             for attempt_idx in range(self.max_retries_per_provider + 1):
                 try:
