@@ -179,13 +179,15 @@ export interface SystemError {
 export function buildChatUI(container: HTMLElement): ChatUIHandles {
   container.innerHTML = chatHTML();
 
-  const root = container.querySelector(".rv-chat") as HTMLElement;
+  const root = container.querySelector<HTMLElement>(".rv-chat");
+  if (!root) {
+    console.error("[RedactVision] ChatUI: Root element .rv-chat not found");
+    throw new Error("Failed to initialize chat UI: root element not found");
+  }
 
   // Brand logo imgs (header avatar + statusbar avatar): wire the
   // CSP-safe blob upgrade and the inline-SVG error fallback.
-  const avatarImgs = root.querySelectorAll(
-    "img[data-rv-logo]"
-  ) as NodeListOf<HTMLImageElement>;
+  const avatarImgs = root.querySelectorAll<HTMLImageElement>("img[data-rv-logo]");
   avatarImgs.forEach((img) => {
     img.addEventListener("error", () => {
       if (img.src !== RV_LOGO_FALLBACK_SVG) img.src = RV_LOGO_FALLBACK_SVG;
@@ -193,25 +195,26 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     void upgradeLogoUrl(img, RV_LOGO_CHROME_URL);
   });
 
-  const privacyBar = root.querySelector("#rv-privacy-bar") as HTMLElement;
-  const headerStatus = root.querySelector("#rv-chat-status") as HTMLElement;
-  const statusDot = root.querySelector("#rv-chat-status-dot") as HTMLElement;
-  const backendPill = root.querySelector("#rv-backend-pill") as HTMLElement;
-  const backendLabel = root.querySelector("#rv-backend-label") as HTMLElement;
-  const conversation = root.querySelector("#rv-conversation") as HTMLElement;
-  const input = root.querySelector("#rv-input") as HTMLTextAreaElement;
-  const sendBtn = root.querySelector("#rv-send-btn") as HTMLButtonElement;
-  const cancelBtn = root.querySelector("#rv-cancel-btn") as HTMLButtonElement;
-  const minimizeBtn = root.querySelector("#rv-minimize-btn") as HTMLElement;
-  const closeBtn = root.querySelector("#rv-close-btn") as HTMLElement;
-  const dragHandle = root.querySelector("[data-rv-drag-handle]") as HTMLElement;
-  const statusbarDot = root.querySelector("#rv-statusbar-dot") as HTMLElement;
-  const statusbarLabel = root.querySelector("#rv-statusbar-label") as HTMLElement;
-  const settingsBtn = root.querySelector("#rv-settings-btn") as HTMLElement;
-  const themeBtn = root.querySelector("#rv-theme-btn") as HTMLElement;
-  const infoBtn = root.querySelector("#rv-info-btn") as HTMLElement;
-  const quickSettings = root.querySelector("#rv-quick-settings") as HTMLElement;
-  const qsAutoRedact = root.querySelector("#rv-qs-autoredact") as HTMLInputElement;
+  // All DOM elements are nullable - accessors must check before use
+  const privacyBar = root.querySelector<HTMLElement>("#rv-privacy-bar");
+  const headerStatus = root.querySelector<HTMLElement>("#rv-chat-status");
+  const statusDot = root.querySelector<HTMLElement>("#rv-chat-status-dot");
+  const backendPill = root.querySelector<HTMLElement>("#rv-backend-pill");
+  const backendLabel = root.querySelector<HTMLElement>("#rv-backend-label");
+  const conversation = root.querySelector<HTMLElement>("#rv-conversation");
+  const input = root.querySelector<HTMLTextAreaElement>("#rv-input");
+  const sendBtn = root.querySelector<HTMLButtonElement>("#rv-send-btn");
+  const cancelBtn = root.querySelector<HTMLButtonElement>("#rv-cancel-btn");
+  const minimizeBtn = root.querySelector<HTMLElement>("#rv-minimize-btn");
+  const closeBtn = root.querySelector<HTMLElement>("#rv-close-btn");
+  const dragHandle = root.querySelector<HTMLElement>("[data-rv-drag-handle]");
+  const statusbarDot = root.querySelector<HTMLElement>("#rv-statusbar-dot");
+  const statusbarLabel = root.querySelector<HTMLElement>("#rv-statusbar-label");
+  const settingsBtn = root.querySelector<HTMLElement>("#rv-settings-btn");
+  const themeBtn = root.querySelector<HTMLElement>("#rv-theme-btn");
+  const infoBtn = root.querySelector<HTMLElement>("#rv-info-btn");
+  const quickSettings = root.querySelector<HTMLElement>("#rv-quick-settings");
+  const qsAutoRedact = root.querySelector<HTMLInputElement>("#rv-qs-autoredact");
 
   let sendHandler: ((text: string) => void) | null = null;
   let cancelHandler: (() => void) | null = null;
@@ -235,56 +238,78 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   function submitText(text: string): void {
     const t = text.trim();
     if (!t) return;
-    input.value = "";
-    input.style.height = "";
-    input.style.overflowY = "hidden";
+    if (input) {
+      input.value = "";
+      input.style.height = "";
+      input.style.overflowY = "hidden";
+    }
     sendHandler?.(t);
   }
 
-  sendBtn.addEventListener("click", () => {
-    submitText(input.value);
-  });
+  if (sendBtn) {
+    sendBtn.addEventListener("click", () => {
+      if (input) submitText(input.value);
+    });
+  }
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitText(input.value);
-    }
-  });
+  if (input) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submitText(input.value);
+      }
+    });
 
-  // Auto-grow: starts single-line (~38-44px) and grows dynamically
-  // up to 160px, switching to internal scroll when capped.
-  const autoGrow = () => {
-    input.style.height = "auto";
-    const newHeight = Math.min(input.scrollHeight, 160);
-    input.style.height = Math.max(newHeight, 38) + "px";
-    input.style.overflowY = input.scrollHeight > 160 ? "auto" : "hidden";
-  };
-  input.addEventListener("input", autoGrow);
+    // Auto-grow: starts single-line (~38-44px) and grows dynamically
+    // up to 160px, switching to internal scroll when capped.
+    const autoGrow = () => {
+      input.style.height = "auto";
+      const newHeight = Math.min(input.scrollHeight, 160);
+      input.style.height = Math.max(newHeight, 38) + "px";
+      input.style.overflowY = input.scrollHeight > 160 ? "auto" : "hidden";
+    };
+    input.addEventListener("input", autoGrow);
+  }
 
-  cancelBtn.addEventListener("click", () => {
-    cancelHandler?.();
-  });
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", () => {
+      cancelHandler?.();
+    });
+  }
 
   // Suggestion chips (empty state) — clicking one submits the task.
-  conversation.addEventListener("click", (e) => {
-    const chip = (e.target as HTMLElement).closest?.(
-      ".rv-chip-suggest"
-    ) as HTMLElement | null;
-    if (chip?.dataset.suggest) {
-      submitText(chip.dataset.suggest);
-    }
-  });
+  // Activity rows are click-to-expand (only the clicked row expands).
+  if (conversation) {
+    conversation.addEventListener("click", (e) => {
+      const chip = (e.target as HTMLElement).closest?.(
+        ".rv-chip-suggest"
+      ) as HTMLElement | null;
+      if (chip?.dataset.suggest) {
+        submitText(chip.dataset.suggest);
+        return;
+      }
+      const row = (e.target as HTMLElement).closest?.(
+        ".rv-msg.rv-expandable"
+      ) as HTMLElement | null;
+      if (row && !row.classList.contains("rv-user")) {
+        toggleActivityExpand(row);
+      }
+    });
+  }
 
   // ---- Header buttons ----
 
-  minimizeBtn.addEventListener("click", () => {
-    minimizeHandler?.();
-  });
+  if (minimizeBtn) {
+    minimizeBtn.addEventListener("click", () => {
+      minimizeHandler?.();
+    });
+  }
 
-  closeBtn.addEventListener("click", () => {
-    closeHandler?.();
-  });
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      closeHandler?.();
+    });
+  }
 
   // ---- Drag (pointer events) ----
   //
@@ -304,50 +329,56 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     root.style.setProperty("--rv-drag-y", `${cdy}px`);
   };
 
-  dragHandle.addEventListener("pointerdown", (e) => {
-    // Ignore drags that started on the header buttons (they handle their
-    // own clicks). The buttons are not inside the drag handle, but be safe.
-    if ((e.target as HTMLElement).closest("button")) return;
-    if (e.button !== 0) return;
+  if (dragHandle) {
+    dragHandle.addEventListener("pointerdown", (e) => {
+      // Ignore drags that started on the header buttons (they handle their
+      // own clicks). The buttons are not inside the drag handle, but be safe.
+      if ((e.target as HTMLElement).closest("button")) return;
+      if (e.button !== 0) return;
 
-    e.preventDefault();
-    dragHandle.setPointerCapture(e.pointerId);
-    const rect = root.getBoundingClientRect();
-    // CSS positions the card via bottom/right. Compute the current
-    // offset from the natural bottom-right anchor.
-    const naturalLeft = window.innerWidth - rect.right;
-    const naturalTop = window.innerHeight - rect.bottom;
-    dragStart = {
-      pointerX: e.clientX,
-      pointerY: e.clientY,
-      baseX: -naturalLeft, // convert anchor to "x offset from natural"
-      baseY: -naturalTop,
+      e.preventDefault();
+      try {
+        dragHandle.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      const rect = root.getBoundingClientRect();
+      // CSS positions the card via bottom/right. Compute the current
+      // offset from the natural bottom-right anchor.
+      const naturalLeft = window.innerWidth - rect.right;
+      const naturalTop = window.innerHeight - rect.bottom;
+      dragStart = {
+        pointerX: e.clientX,
+        pointerY: e.clientY,
+        baseX: -naturalLeft, // convert anchor to "x offset from natural"
+        baseY: -naturalTop,
+      };
+    });
+
+    dragHandle.addEventListener("pointermove", (e) => {
+      if (!dragStart) return;
+      const dx = dragStart.baseX + (e.clientX - dragStart.pointerX);
+      const dy = dragStart.baseY + (e.clientY - dragStart.pointerY);
+      applyOffset(dx, dy);
+    });
+
+    const endDrag = (e: PointerEvent) => {
+      if (!dragStart) return;
+      try {
+        dragHandle.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      // Read the final offset back from the live style.
+      const fx = parseFloat(root.style.getPropertyValue("--rv-drag-x") || "0");
+      const fy = parseFloat(root.style.getPropertyValue("--rv-drag-y") || "0");
+      dragEndHandler?.({ dx: fx, dy: fy });
+      dragStart = null;
     };
-  });
 
-  dragHandle.addEventListener("pointermove", (e) => {
-    if (!dragStart) return;
-    const dx = dragStart.baseX + (e.clientX - dragStart.pointerX);
-    const dy = dragStart.baseY + (e.clientY - dragStart.pointerY);
-    applyOffset(dx, dy);
-  });
-
-  const endDrag = (e: PointerEvent) => {
-    if (!dragStart) return;
-    try {
-      dragHandle.releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    // Read the final offset back from the live style.
-    const fx = parseFloat(root.style.getPropertyValue("--rv-drag-x") || "0");
-    const fy = parseFloat(root.style.getPropertyValue("--rv-drag-y") || "0");
-    dragEndHandler?.({ dx: fx, dy: fy });
-    dragStart = null;
-  };
-
-  dragHandle.addEventListener("pointerup", endDrag);
-  dragHandle.addEventListener("pointercancel", endDrag);
+    dragHandle.addEventListener("pointerup", endDrag);
+    dragHandle.addEventListener("pointercancel", endDrag);
+  }
 
   // ---- Live processing view ----
   //
@@ -360,9 +391,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   type Step = { key: string; label: string; done: boolean; active: boolean };
   let currentProcessing: {
     el: HTMLElement;
-    stepsEl: HTMLElement;
-    currentEl: HTMLElement;
-    elapsedEl: HTMLElement;
+    stepsEl: HTMLElement | null;
+    currentEl: HTMLElement | null;
+    elapsedEl: HTMLElement | null;
     startedAt: number;
     steps: Step[];
     timer: ReturnType<typeof setInterval> | null;
@@ -377,6 +408,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   ];
 
   function startProcessing(): void {
+    if (!conversation) return;
     // First clear the empty placeholder.
     const placeholder = conversation.querySelector(".rv-empty");
     if (placeholder) placeholder.remove();
@@ -396,14 +428,17 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       <div class="rv-processing-current" data-processing-current>Planning next step…</div>
       <div class="rv-processing-steps"></div>
     `;
-    conversation.appendChild(el);
-    const stepsEl = el.querySelector(".rv-processing-steps") as HTMLElement;
-    const currentEl = el.querySelector("[data-processing-current]") as HTMLElement;
-    const elapsedEl = el.querySelector(".rv-processing-elapsed") as HTMLElement;
+    if (conversation) {
+      conversation.appendChild(el);
+    }
+    const stepsEl = el.querySelector<HTMLElement>(".rv-processing-steps");
+    const currentEl = el.querySelector<HTMLElement>("[data-processing-current]");
+    const elapsedEl = el.querySelector<HTMLElement>(".rv-processing-elapsed");
 
     // Seed steps.
     const steps: Step[] = DEFAULT_STEPS.map((s) => ({ ...s }));
     function renderSteps() {
+      if (!stepsEl) return;
       stepsEl.innerHTML = steps
         .map(
           (s) => `
@@ -422,7 +457,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     }, 100);
 
     currentProcessing = { el, stepsEl, currentEl, elapsedEl, startedAt, steps, timer };
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   function updateProcessingStep(key: string, currentAction?: string): void {
@@ -439,6 +476,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       return s.done ? s : { ...s, done: true, active: false };
     });
     function render() {
+      if (!cp.stepsEl) return;
       cp.stepsEl.innerHTML = cp.steps
         .map(
           (s) => `
@@ -453,7 +491,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (currentAction && cp.currentEl) {
       cp.currentEl.textContent = currentAction;
     }
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   function endProcessing(_phase: string, _finalMessage: string): void {
@@ -548,29 +588,45 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       return;
     }
 
-    // Otherwise: append a small marker to the conversation so the
-    // timeline is not completely empty when "View details" is
-    // expanded. Real users will rely on the live processing view
-    // and the summary card; this just keeps the raw log coherent.
+    // Stop the elapsed timer + in-progress state of the previous row.
+    if (conversation) {
+      const prevInProgress = conversation.querySelectorAll<HTMLElement>(".rv-in-progress");
+      prevInProgress.forEach((el) => {
+        el.classList.remove("rv-in-progress");
+        stopElapsedTimer(el);
+      });
+    }
+
+    // Render as a slim activity log row (click to expand details).
     const block = document.createElement("div");
-    block.className = `rv-msg rv-${activity.kind}`;
+    // Add rv-in-progress for action_planned (will be removed when validated/executed)
+    const inProgressClass = activity.kind === "action_planned" ? " rv-in-progress" : "";
+    block.className = `rv-msg rv-${activity.kind}${inProgressClass}`;
     block.dataset.id = activity.id;
+    block.classList.add("rv-expandable");
     block.innerHTML = `
       <div class="rv-msg-icon">${iconFor(activity.kind)}</div>
-      <div class="rv-msg-body">
-        <div class="rv-msg-text">${escapeHtml(activity.text)}</div>
-        ${activity.detail ? `<div class="rv-msg-detail">${escapeHtml(activity.detail)}</div>` : ""}
+      <div class="rv-msg-main">
+        <div class="rv-msg-row">
+          <div class="rv-msg-body">
+            <span class="rv-msg-text">${escapeHtml(activity.text)}</span>
+            ${activity.detail ? `<span class="rv-msg-detail">${escapeHtml(activity.detail)}</span>` : ""}
+          </div>
+          <span class="rv-msg-elapsed"></span>
+          <span class="rv-msg-chevron">▾</span>
+        </div>
+        <div class="rv-msg-expand"><div class="rv-msg-expand-inner">${buildActivityDetails(activity)}</div></div>
       </div>
     `;
-    // We DO render these inline so the "View details" panel can
-    // simply be a scroll-to-bottom of the conversation. The user
-    // sees a clean live processing card on top, and the timeline
-    // is hidden behind the "View details" toggle in the summary.
-    conversation.appendChild(block);
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.appendChild(block);
+      conversation.scrollTop = conversation.scrollHeight;
+      if (inProgressClass) startElapsedTimer(block);
+    }
   }
 
   function appendUserBubble(text: string): void {
+    if (!conversation) return;
     const placeholder = conversation.querySelector(".rv-empty");
     if (placeholder) placeholder.remove();
     const block = document.createElement("div");
@@ -586,17 +642,23 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     state: "ready" | "thinking" | "completed" | "error",
     label: string
   ): void {
-    statusDot.className = `rv-chat-dot rv-${state}`;
-    headerStatus.textContent = label;
+    if (statusDot) {
+      statusDot.className = `rv-chat-dot rv-${state}`;
+    }
+    if (headerStatus) {
+      headerStatus.textContent = label;
+    }
     // Mirror the status into the footer statusbar pill.
     if (statusbarDot && statusbarLabel) {
       statusbarDot.className = `rv-statusbar-dot rv-${state}`;
       statusbarLabel.textContent = label;
     }
-    if (state === "thinking") {
-      privacyBar.classList.add("rv-active");
-    } else {
-      privacyBar.classList.remove("rv-active");
+    if (privacyBar) {
+      if (state === "thinking") {
+        privacyBar.classList.add("rv-active");
+      } else {
+        privacyBar.classList.remove("rv-active");
+      }
     }
   }
 
@@ -617,8 +679,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   }
 
   function setRedactionSummary(summary: RedactionSummary): void {
+    if (!conversation || !root) return;
     // Find the existing redaction card (if any) or create one.
-    let card = root.querySelector(".rv-redaction-card") as HTMLElement | null;
+    let card = root.querySelector<HTMLElement>(".rv-redaction-card");
     if (!card) {
       card = document.createElement("div");
       card.className = "rv-redaction-card";
@@ -658,9 +721,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     `;
 
     if (summary.inProgress) {
-      privacyBar.classList.add("rv-active");
-    } else if (!statusDot.classList.contains("rv-thinking")) {
-      privacyBar.classList.remove("rv-active");
+      if (privacyBar) privacyBar.classList.add("rv-active");
+    } else if (statusDot && !statusDot.classList.contains("rv-thinking")) {
+      if (privacyBar) privacyBar.classList.remove("rv-active");
     }
   }
 
@@ -754,27 +817,33 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
 
     // Insert the summary card right after the redaction card (if any)
     // so privacy info stays visible above the result.
-    const redaction = conversation.querySelector(".rv-redaction-card");
-    if (redaction && redaction.nextSibling) {
-      conversation.insertBefore(card, redaction.nextSibling);
-    } else {
-      conversation.appendChild(card);
+    if (conversation) {
+      const redaction = conversation.querySelector(".rv-redaction-card");
+      if (redaction && redaction.nextSibling) {
+        conversation.insertBefore(card, redaction.nextSibling);
+      } else {
+        conversation.appendChild(card);
+      }
     }
 
     // Wire the "View details" toggle to open the full-screen details
     // panel (timeline + sanitized data) inside the card.
-    const toggle = card.querySelector("[data-summary-toggle]") as HTMLButtonElement;
+    const toggle = card.querySelector<HTMLButtonElement>("[data-summary-toggle]");
     summaryToggleBtn = toggle;
-    toggle.addEventListener("click", () => {
-      const isOpen = detailsPanel?.classList.contains("rv-open");
-      if (isOpen) {
-        closeDetails();
-      } else {
-        openDetails("timeline");
-      }
-    });
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        const isOpen = detailsPanel?.classList.contains("rv-open");
+        if (isOpen) {
+          closeDetails();
+        } else {
+          openDetails("timeline");
+        }
+      });
+    }
 
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   function showValidationError(error: ValidationError): void {
@@ -809,22 +878,28 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     `;
 
     // Insert right after redaction card or at the end
-    const redaction = conversation.querySelector(".rv-redaction-card");
-    if (redaction && redaction.nextSibling) {
-      conversation.insertBefore(card, redaction.nextSibling);
-    } else {
-      conversation.appendChild(card);
+    if (conversation) {
+      const redaction = conversation.querySelector(".rv-redaction-card");
+      if (redaction && redaction.nextSibling) {
+        conversation.insertBefore(card, redaction.nextSibling);
+      } else {
+        conversation.appendChild(card);
+      }
     }
 
     // Wire retry button to refocus input and clear current value for quick correction
-    const retryBtn = card.querySelector("[data-validation-retry]") as HTMLButtonElement;
-    retryBtn?.addEventListener("click", () => {
-      focusInput();
-      setInputValue("");
-      card.remove();
-    });
+    const retryBtn = card.querySelector<HTMLButtonElement>("[data-validation-retry]");
+    if (retryBtn) {
+      retryBtn.addEventListener("click", () => {
+        focusInput();
+        setInputValue("");
+        card.remove();
+      });
+    }
 
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   function showSystemError(error: SystemError): void {
@@ -855,30 +930,37 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     `;
 
     // Insert right after redaction card or at the end
-    const redaction = conversation.querySelector(".rv-redaction-card");
-    if (redaction && redaction.nextSibling) {
-      conversation.insertBefore(card, redaction.nextSibling);
-    } else {
-      conversation.appendChild(card);
+    if (conversation) {
+      const redaction = conversation.querySelector(".rv-redaction-card");
+      if (redaction && redaction.nextSibling) {
+        conversation.insertBefore(card, redaction.nextSibling);
+      } else {
+        conversation.appendChild(card);
+      }
     }
 
     // Wire action button
-    const actionBtn = card.querySelector("[data-system-error-action]") as HTMLButtonElement;
-    actionBtn?.addEventListener("click", () => {
-      if (error.actionType === "refresh") {
-        window.location.reload();
-      } else if (error.actionType === "retry") {
-        focusInput();
-        card.remove();
-      }
-    });
+    const actionBtn = card.querySelector<HTMLButtonElement>("[data-system-error-action]");
+    if (actionBtn) {
+      actionBtn.addEventListener("click", () => {
+        if (error.actionType === "refresh") {
+          window.location.reload();
+        } else if (error.actionType === "retry") {
+          focusInput();
+          card.remove();
+        }
+      });
+    }
 
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   // ---- Details panel (Timeline + Sanitized data) ----
 
   function openDetails(tab: "timeline" | "data"): void {
+    if (!root) return;
     detailsTab = tab;
     if (!detailsPanel) {
       detailsPanel = document.createElement("div");
@@ -978,14 +1060,14 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         // Build category chips
         const categoryChips = sortedTypes.map(([type, count]) => {
           const icon = iconForType(type);
-          return `<div class="rv-category-chip"><span class="rv-category-icon">${icon}</span><span class="rv-category-label">${escapeHtml(type)}</span><span class="rv-category-count">${count}</span></div>`;
+          return `<div class="rv-category-chip" data-type="${escapeHtml(type)}"><span class="rv-category-icon">${icon}</span><span class="rv-category-label">${escapeHtml(type)}</span><span class="rv-category-count">${count}</span></div>`;
         }).join("");
 
         const tokenRows = sanitizedData.tokens.length
           ? sanitizedData.tokens
               .map(
                 (t) => `
-              <div class="rv-token-row">
+              <div class="rv-token-row" data-type="${escapeHtml(t.type.toUpperCase())}">
                 <span class="rv-token-icon">${iconForType(t.type)}</span>
                 <span class="rv-token-name">${escapeHtml(t.token)}</span>
                 <span class="rv-token-type">${escapeHtml(t.type)}</span>
@@ -1053,23 +1135,23 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   }
 
   function setInputEnabled(enabled: boolean): void {
-    input.disabled = !enabled;
-    sendBtn.disabled = !enabled;
+    if (input) input.disabled = !enabled;
+    if (sendBtn) sendBtn.disabled = !enabled;
     // Cancel is active while the agent is working, disabled when idle.
-    cancelBtn.disabled = enabled;
-    if (enabled) input.focus();
+    if (cancelBtn) cancelBtn.disabled = enabled;
+    if (enabled && input) input.focus();
   }
 
   function focusInput(): void {
-    input.focus();
+    if (input) input.focus();
   }
 
   function setInputValue(v: string): void {
-    input.value = v;
+    if (input) input.value = v;
   }
 
   function setMinimized(minimized: boolean): void {
-    root.classList.toggle("rv-minimized", minimized);
+    if (root) root.classList.toggle("rv-minimized", minimized);
   }
 
   function setDragOffset(dx: number, dy: number): void {
@@ -1089,56 +1171,71 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       theme === "light" ||
       (theme === "auto" && window.matchMedia("(prefers-color-scheme: light)").matches);
     currentTheme = light ? "light" : "dark";
-    root.classList.toggle("rv-light", light);
-    themeBtn.textContent = light ? "☀️" : "🌙";
-    quickSettings
-      .querySelectorAll<HTMLButtonElement>("[data-qs-theme]")
-      .forEach((b) =>
-        b.classList.toggle("rv-active", b.dataset.qsTheme === currentTheme)
-      );
+    if (root) root.classList.toggle("rv-light", light);
+    if (themeBtn) {
+      themeBtn.textContent = light ? "☀️" : "🌙";
+    }
+    if (quickSettings) {
+      quickSettings
+        .querySelectorAll<HTMLButtonElement>("[data-qs-theme]")
+        .forEach((b) =>
+          b.classList.toggle("rv-active", b.dataset.qsTheme === currentTheme)
+        );
+    }
   }
 
   function setAutoRedactState(enabled: boolean): void {
-    qsAutoRedact.checked = enabled;
+    if (qsAutoRedact) qsAutoRedact.checked = enabled;
   }
 
   // ---- Footer / quick settings wiring ----
 
-  themeBtn.addEventListener("click", () => {
-    themeToggleHandler?.(currentTheme === "dark" ? "light" : "dark");
-  });
-
-  settingsBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    quickSettings.classList.toggle("rv-open");
-  });
-
-  infoBtn.addEventListener("click", () => {
-    const isOpen = detailsPanel?.classList.contains("rv-open");
-    if (isOpen) {
-      closeDetails();
-    } else {
-      openDetails("timeline");
-    }
-  });
-
-  quickSettings.querySelectorAll<HTMLButtonElement>("[data-qs-theme]").forEach((b) => {
-    b.addEventListener("click", () => {
-      themeToggleHandler?.(b.dataset.qsTheme as "dark" | "light");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", () => {
+      themeToggleHandler?.(currentTheme === "dark" ? "light" : "dark");
     });
-  });
+  }
 
-  qsAutoRedact.addEventListener("change", () => {
-    autoRedactHandler?.(qsAutoRedact.checked);
-  });
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      quickSettings?.classList.toggle("rv-open");
+    });
+  }
+
+  if (infoBtn) {
+    infoBtn.addEventListener("click", () => {
+      const isOpen = detailsPanel?.classList.contains("rv-open");
+      if (isOpen) {
+        closeDetails();
+      } else {
+        openDetails("timeline");
+      }
+    });
+  }
+
+  if (quickSettings) {
+    quickSettings.querySelectorAll<HTMLButtonElement>("[data-qs-theme]").forEach((b) => {
+      b.addEventListener("click", () => {
+        themeToggleHandler?.(b.dataset.qsTheme as "dark" | "light");
+      });
+    });
+  }
+
+  if (qsAutoRedact) {
+    qsAutoRedact.addEventListener("change", () => {
+      autoRedactHandler?.(qsAutoRedact.checked);
+    });
+  }
 
   // Close the quick-settings popover when clicking anywhere else in the card.
   root.addEventListener("click", (e) => {
+    if (!quickSettings) return;
     const target = e.target as HTMLElement;
     if (
       quickSettings.classList.contains("rv-open") &&
       !quickSettings.contains(target) &&
-      !settingsBtn.contains(target)
+      settingsBtn && !settingsBtn.contains(target)
     ) {
       quickSettings.classList.remove("rv-open");
     }
@@ -1152,7 +1249,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       currentProcessing = null;
     }
     detailedTimeline = [];
-    conversation.innerHTML = emptyStateHTML();
+    if (conversation) {
+      conversation.innerHTML = emptyStateHTML();
+    }
   }
 
   function resetConversation(): void {
@@ -1319,6 +1418,110 @@ function emptyStateHTML(): string {
       </div>
     </div>
   `;
+}
+
+/**
+ * Expand/collapse a single activity row. Only the clicked row is
+ * toggled; the conversation scroll position is preserved so the
+ * expansion never causes a visual jump.
+ */
+function toggleActivityExpand(row: HTMLElement): void {
+  const conv = row.closest(".rv-conversation") as HTMLElement | null;
+  const scrollTop = conv?.scrollTop ?? 0;
+  const wasExpanded = row.classList.toggle("rv-expanded");
+  const chevron = row.querySelector<HTMLElement>(".rv-msg-chevron");
+  if (chevron) chevron.classList.toggle("rv-open", wasExpanded);
+  if (conv) conv.scrollTop = scrollTop;
+}
+
+/** Live elapsed timers for in-progress activity rows. */
+const activityTimers = new WeakMap<HTMLElement, number>();
+
+function startElapsedTimer(row: HTMLElement): void {
+  const span = row.querySelector<HTMLElement>(".rv-msg-elapsed");
+  if (!span) return;
+  const startedAt = Date.now();
+  const tick = () => {
+    span.textContent = `Working… ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+  };
+  tick();
+  activityTimers.set(row, window.setInterval(tick, 100));
+}
+
+function stopElapsedTimer(row: HTMLElement): void {
+  const timer = activityTimers.get(row);
+  if (timer !== undefined) {
+    clearInterval(timer);
+    activityTimers.delete(row);
+  }
+  const span = row.querySelector<HTMLElement>(".rv-msg-elapsed");
+  if (span) span.textContent = "";
+}
+
+/**
+ * Build the expanded (factual) detail section for an activity row.
+ * Only real telemetry from the agent pipeline is shown — no invented
+ * reasoning. Sensitive values are never present here: the session
+ * tokenizes them before any activity is emitted.
+ */
+function buildActivityDetails(activity: AgentActivity): string {
+  const meta = (activity.meta || {}) as Record<string, unknown>;
+  const rows: string[] = [];
+  const add = (label: string, value: string, mono = false): void => {
+    rows.push(
+      `<div class="rv-x-row"><span class="rv-x-label">${escapeHtml(label)}</span>` +
+        `<span class="rv-x-value${mono ? " rv-mono" : ""}">${escapeHtml(value)}</span></div>`
+    );
+  };
+
+  add("Intent", activity.text);
+  if (activity.detail) add("Detail", activity.detail);
+
+  const action = meta.action as Record<string, unknown> | undefined;
+  if (action && typeof action.action === "string") {
+    add("Action", actionCodeRepr(action), true);
+  }
+  if (typeof meta.source === "string") add("Source", meta.source, true);
+  if (action && typeof action.confidence === "number") {
+    add("Confidence", `${Math.round(action.confidence * 100)}%`, true);
+  }
+  if (typeof meta.confidence === "number") {
+    add("Confidence", `${Math.round(meta.confidence * 100)}%`, true);
+  }
+  if (typeof meta.durationMs === "number") {
+    add("Duration", `${Math.round(meta.durationMs)}ms`, true);
+  }
+  if (typeof meta.errorCode === "string") add("Error code", meta.errorCode, true);
+  if (typeof meta.failedAction === "string") add("Failed action", meta.failedAction, true);
+  if (rows.length === 1 && !activity.detail) add("Status", "Completed", true);
+
+  return rows.join("");
+}
+
+/** Compact code-style representation of a planned action (factual). */
+function actionCodeRepr(a: Record<string, unknown>): string {
+  const kind = String(a.action);
+  const target = a.target ? String(a.target) : "";
+  const value = a.value !== undefined && a.value !== null ? String(a.value) : "";
+  const amount = typeof a.amount === "number" ? a.amount : null;
+  switch (kind) {
+    case "click":
+      return `click(${target || "?"})`;
+    case "type":
+      return `type(${target || "?"}, "${value.length > 32 ? value.slice(0, 29) + "…" : value}")`;
+    case "scroll": {
+      const dir = String(a.direction || "down").toLowerCase() === "up" ? -1 : 1;
+      return `window.scrollBy(0, ${dir * (amount ?? 500)})`;
+    }
+    case "select":
+      return `select(${target || "?"}, "${value}")`;
+    case "wait":
+      return `wait(${amount ?? 1000}ms)`;
+    case "navigate":
+      return `navigate(${target || value || "?"})`;
+    default:
+      return `${kind} ${target}`.trim();
+  }
 }
 
 function iconFor(kind: AgentActivity["kind"]): string {

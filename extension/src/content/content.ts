@@ -226,7 +226,7 @@ console.log("[RedactVision] Agent reasoning via server LLM");
 
 const STYLE_TAG_ID = "rv-chat-styles";
 const STYLE_FALLBACK = `
-  .rv-chat { position:fixed;bottom:90px;right:20px;width:380px;height:580px;
+  .rv-chat { position:fixed;bottom:84px;right:20px;width:380px;height:580px;
     background:#131a30;color:#e6ecff;border:1px solid #2a3155;border-radius:16px;
     font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","SF Pro Text",Inter,Roboto,sans-serif;
     font-size:13px;z-index:2147483646;display:flex;flex-direction:column;overflow:hidden;
@@ -320,14 +320,20 @@ function getStoredOffset(): Promise<{ dx: number; dy: number }> {
   return new Promise((resolve) => {
     try {
       chrome.storage.local.get(OFFSET_KEY, (data: Record<string, unknown>) => {
-        const o = data?.[OFFSET_KEY] as { dx?: number; dy?: number } | undefined;
-        if (o && typeof o.dx === "number" && typeof o.dy === "number") {
-          resolve({ dx: o.dx, dy: o.dy });
-        } else {
+        try {
+          const o = data?.[OFFSET_KEY] as { dx?: number; dy?: number } | undefined;
+          if (o && typeof o.dx === "number" && typeof o.dy === "number") {
+            resolve({ dx: o.dx, dy: o.dy });
+          } else {
+            resolve({ dx: 0, dy: 0 });
+          }
+        } catch (err) {
+          console.error("[RedactVision] Content: Error reading stored offset:", err);
           resolve({ dx: 0, dy: 0 });
         }
       });
-    } catch {
+    } catch (err) {
+      console.error("[RedactVision] Content: Failed to get stored offset:", err);
       resolve({ dx: 0, dy: 0 });
     }
   });
@@ -444,6 +450,27 @@ async function openInPagePanelAsync(): Promise<void> {
       const isFailed = finalPhase === "failed" || finalPhase === "max_iterations_reached" || finalPhase === "cancelled";
       const isOffline = finalPhase === "offline";
       const uiPhase = isCompleted ? "completed" : (isFailed || isOffline) ? "error" : "thinking";
+      const isContextInvalidatedOutcome = outcome.reason.includes(
+        "Extension context invalidated"
+      );
+
+      if (isContextInvalidatedOutcome) {
+        // ONE clear message with a working refresh button. We deliberately
+        // skip the generic end-of-task summary card here — showing both a
+        // "Task could not be completed" summary AND this error would stack
+        // two conflicting messages for the same failure.
+        ui.setRedactionSummary(session.getRedactionSummary(false));
+        ui.setSanitizedData(session.getSanitizedData());
+        ui.showSystemError({
+          type: "extension_context_invalidated",
+          title: "Please refresh this page",
+          message:
+            "The extension was updated or reloaded. This page is still connected to the previous version — refresh (F5 / Cmd+R) to reconnect.",
+          actionLabel: "🔄 Refresh Page",
+          actionType: "refresh",
+        });
+        ui.setStatus("error", "Refresh needed");
+      } else {
       // After the prompt, re-summarize (page state may have changed).
       ui.setRedactionSummary(session.getRedactionSummary(false));
       // Refresh the sanitized-data snapshot for the details panel.
@@ -494,6 +521,7 @@ async function openInPagePanelAsync(): Promise<void> {
             : "Failed"
           : "Working…"
       );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const isContextInvalidated =
@@ -504,17 +532,18 @@ async function openInPagePanelAsync(): Promise<void> {
       if (isContextInvalidated) {
         ui.showSystemError({
           type: "extension_context_invalidated",
-          title: "Extension update ho gaya hai",
-          message: "Yeh page purane extension version se connected hai. Page refresh karein (F5/Cmd+R) taaki extension dobara connect ho sake.",
+          title: "Please refresh this page",
+          message:
+            "The extension was updated or reloaded. This page is still connected to the previous version — refresh (F5 / Cmd+R) to reconnect.",
           actionLabel: "🔄 Refresh Page",
           actionType: "refresh",
         });
-        ui.setStatus("error", "Reconnect needed");
+        ui.setStatus("error", "Refresh needed");
       } else {
         ui.showSystemError({
           type: "runtime_error",
-          title: "Kuch galat ho gaya",
-          message: `Error: ${message}. Please dobara try karein ya page refresh karein.`,
+          title: "Something went wrong",
+          message: `Error: ${message}. Please try again, or refresh the page if the problem persists.`,
           actionLabel: "🔄 Retry",
           actionType: "retry",
         });
@@ -563,7 +592,7 @@ function closeInPagePanel(): void {
 /* ============================================================
  *  Floating launcher pill (opens the in-page panel)
  *  - Persistent on every page; clicking it opens / toggles the card.
- *  - The pill itself is a hard-fixed 72×72 circular FAB (see CSS in
+ *  - The pill itself is a hard-fixed 56×56 circular FAB (see CSS in
  *    injectAgentIndicator). Dragging moves it via left/top only and
  *    clamps it to the viewport; width/height are never changed.
  * ============================================================ */
@@ -579,12 +608,12 @@ function injectAgentIndicator(): void {
       bottom: 20px;
       right: 20px;
       box-sizing: border-box;
-      width: 72px;
-      height: 72px;
-      min-width: 72px;
-      max-width: 72px;
-      min-height: 72px;
-      max-height: 72px;
+      width: 56px;
+      height: 56px;
+      min-width: 56px;
+      max-width: 56px;
+      min-height: 56px;
+      max-height: 56px;
       margin: 0;
       padding: 0;
       z-index: 2147483644;
@@ -787,40 +816,49 @@ async function applyDashboardSettings(): Promise<void> {
 
 chrome.runtime.onMessage.addListener(
   (message: unknown, _sender: chrome.runtime.MessageSender, sendResponse: (response: unknown) => void) => {
-    if (typeof message !== "object" || message === null) return;
-    const msg = message as { type?: string };
+    try {
+      if (typeof message !== "object" || message === null) return;
+      const msg = message as { type?: string };
 
-    if (msg.type === "GET_PRIVACY_STATUS") {
-      const tokens = privacyFirewall.getLocalTokenMap().map((r) => ({
-        token: r.token,
-        type: r.type,
-      }));
-      sendResponse({
-        tokenCount: tokens.length,
-        tokens,
-        sanitizedDOM: sanitizedPageDOM,
-      });
-      return true;
-    }
+      if (msg.type === "GET_PRIVACY_STATUS") {
+        const tokens = privacyFirewall.getLocalTokenMap().map((r) => ({
+          token: r.token,
+          type: r.type,
+        }));
+        sendResponse({
+          tokenCount: tokens.length,
+          tokens,
+          sanitizedDOM: sanitizedPageDOM,
+        });
+        return true;
+      }
 
-    if (msg.type === "GET_SAFE_TOKENS") {
-      const tokens = privacyFirewall.getLocalTokenMap().map((r) => ({
-        token: r.token,
-        type: r.type,
-      }));
-      sendResponse({ tokens });
-      return true;
-    }
+      if (msg.type === "GET_SAFE_TOKENS") {
+        const tokens = privacyFirewall.getLocalTokenMap().map((r) => ({
+          token: r.token,
+          type: r.type,
+        }));
+        sendResponse({ tokens });
+        return true;
+      }
 
-    if (msg.type === "RV_SET_WIDGET_VISIBLE") {
-      const visible = (msg as { visible?: boolean }).visible;
-      void applyWidgetVisibility(visible !== false);
-      return true;
-    }
+      if (msg.type === "RV_SET_WIDGET_VISIBLE") {
+        const visible = (msg as { visible?: boolean }).visible;
+        void applyWidgetVisibility(visible !== false);
+        return true;
+      }
 
-    if (msg.type === "RV_SETTINGS_UPDATED") {
-      void applyDashboardSettings();
-      return true;
+      if (msg.type === "RV_SETTINGS_UPDATED") {
+        void applyDashboardSettings();
+        return true;
+      }
+    } catch (err) {
+      console.error("[RedactVision] Content: Message handler error:", err);
+      try {
+        sendResponse({ error: err instanceof Error ? err.message : String(err) });
+      } catch {
+        /* sendResponse may fail if context is invalidated */
+      }
     }
   }
 );

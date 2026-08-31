@@ -323,28 +323,45 @@ export class AgentSession {
       // No action → either "done" (success) or planner failure.
       if (!planResult.action) {
         if (planResult.source === "none") {
-          // Distinguish "agent offline" from "task uninterpretable".
+          // Distinguish different error types for specific user guidance
+          const isExtensionInvalidated = planResult.errorCode === "extension_context_invalidated";
           const isOffline =
             planResult.errorCode === "llm_not_configured" ||
             planResult.errorCode === "llm_unavailable" ||
             planResult.errorCode === "server_unreachable";
-          phase = isOffline ? "offline" : "failed";
-          reason = isOffline
-            ? `Server agent offline: ${planResult.errorCode || "unavailable"}`
-            : planResult.errorCode
-            ? `Planner rejected task: ${planResult.errorCode}`
-            : "Planner did not return an action";
-          this.push({
-            kind: "error",
-            text: isOffline
-              ? "Server agent is offline"
-              : "Could not plan a next action",
-            detail:
-              planResult.message ||
-              (isOffline
-                ? "Check that the server is running and has at least one LLM provider configured."
-                : "Try rephrasing the task."),
-          });
+
+          if (isExtensionInvalidated) {
+            phase = "failed";
+            reason = "Extension context invalidated — page needs refresh";
+            this.push({
+              kind: "error",
+              text: "Extension was updated — please refresh this page",
+              detail:
+                "This page is still connected to the previous extension version. Refresh the page (F5 / Cmd+R) so the extension can reconnect.",
+              meta: { errorCode: "extension_context_invalidated", requiresRefresh: true },
+            });
+          } else if (isOffline) {
+            phase = "offline";
+            reason = `Server agent offline: ${planResult.errorCode || "unavailable"}`;
+            this.push({
+              kind: "error",
+              text: "Server agent is offline",
+              detail:
+                planResult.message ||
+                "Check that the server is running and has at least one LLM provider configured.",
+              meta: { errorCode: planResult.errorCode },
+            });
+          } else {
+            phase = "failed";
+            reason = planResult.errorCode
+              ? `Planner rejected task: ${planResult.errorCode}`
+              : "Planner did not return an action";
+            this.push({
+              kind: "error",
+              text: "Could not plan a next action",
+              detail: planResult.message || "Try rephrasing the task.",
+            });
+          }
         } else {
           phase = "completed";
           reason = "Planner signaled completion";
@@ -434,6 +451,7 @@ export class AgentSession {
           kind: "error",
           text: result.message,
           detail: "Action failed — try rephrasing the task",
+          meta: { failedAction: action.action, target: action.target ?? null },
         });
         break;
       }
@@ -444,6 +462,11 @@ export class AgentSession {
         kind: "action_executed",
         text: result.message,
         detail: `Confidence ${action.confidence.toFixed(2)} • ${result.durationMs.toFixed(0)}ms`,
+        meta: {
+          confidence: action.confidence,
+          durationMs: result.durationMs,
+          source: planResult.source,
+        },
       });
 
       // 6. Observe

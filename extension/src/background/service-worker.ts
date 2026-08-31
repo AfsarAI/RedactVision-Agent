@@ -40,14 +40,34 @@ chrome.runtime.onMessage.addListener(
     if (!message || typeof message.type !== "string") return false;
 
     // Each handler is async; we return `true` to keep the channel open
-    // for the async sendResponse.
+    // for the async sendResponse. Errors are caught and sent back gracefully.
     if (message.type === "RV_PING_SERVER") {
-      void handlePing(String(message.serverUrl || "")).then(sendResponse);
+      void handlePing(String(message.serverUrl || ""))
+        .then(sendResponse)
+        .catch((err) => {
+          console.error("[RedactVision] Service Worker: Ping handler error:", err);
+          sendResponse({
+            ok: false,
+            status: 0,
+            body: null,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       return true;
     }
 
     if (message.type === "RV_PLAN_ACTION") {
-      void handlePlan(message as unknown as RVPlanMessage).then(sendResponse);
+      void handlePlan(message as unknown as RVPlanMessage)
+        .then(sendResponse)
+        .catch((err) => {
+          console.error("[RedactVision] Service Worker: Plan handler error:", err);
+          sendResponse({
+            ok: false,
+            status: 0,
+            body: null,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       return true;
     }
 
