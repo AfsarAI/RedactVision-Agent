@@ -1,31 +1,129 @@
-# Python virtual environment
+# =====================================================================
+# RedactVision-Agent — .gitignore
+# Everything that should NOT be committed, organised by category.
+# =====================================================================
+
+# ---------------------------------------------------------------------
+# Python / Server
+# ---------------------------------------------------------------------
+# Virtual environments
 .venv/
+venv/
+env/
+ENV/
 
-# Python cache
+# Python bytecode / caches
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*$py.class
+*.so
 
-# Node dependencies
+# Test / tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+.hypothesis/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.dist-info/
+.eggs/
+pip-wheel-metadata/
+wheelhouse/
+
+# ---------------------------------------------------------------------
+# Node / Extension
+# ---------------------------------------------------------------------
 node_modules/
-
-# Environment / secrets
-.env
-.env.*
-!.env.example
-
-# Claude Code local configuration / secrets
-.claude/
-
-# Logs
-*.log
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
+.pnp/
+.pnp.js
 
 # Build output
 extension/dist/
+
+# Dependency debug logs / manager state
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+lerna-debug.log*
+.npm/
+.yarn/
+
+# TypeScript
+*.tsbuildinfo
+.eslintcache
+.next/
+out/
+.nuxt/
+.vite/
+
+# ---------------------------------------------------------------------
+# Environment / Secrets  (KABHI COMMIT NA KARO)
+# ---------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.local
+.envrc
+.env.production
+.env.test
+
+# ---------------------------------------------------------------------
+# AI tooling local state
+# ---------------------------------------------------------------------
+.claude/
+.anthropic/
+.codex/
+
+# ---------------------------------------------------------------------
+# IDE / Editor
+# ---------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+*.kate-swp
+*.tmp
+
+# ---------------------------------------------------------------------
+# OS files
+# ---------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------
+*.log
+logs/
+*.log.*
+
+# ---------------------------------------------------------------------
+# Temporary / scratch files
+# ---------------------------------------------------------------------
+tmp/
+temp/
+scratch/
+*.bak
+*.orig
