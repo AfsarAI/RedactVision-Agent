@@ -93,6 +93,19 @@ def test_validate_shape_done_normalizes():
     assert a["done"] is True
 
 
+def test_validate_action_request_rejects_raw_prompt_name_email():
+    evt = SanitizedEvent(
+        url="http://localhost:8000/",
+        title="Test Form",
+        elements=[{"tag": "input", "id": "email", "value": "", "selector": "#email"}],
+        prompt="My name is Shrijal Gupta and my email is shrijal@example.com",
+        timestamp=0.0,
+    )
+    ok, err = determine_action.__globals__["validate_action_request"](evt)
+    assert ok is False
+    assert "email" in (err or "").lower()
+
+
 def test_user_prompt_contains_required_fields():
     p = build_user_prompt("click submit", SAMPLE_DOM)
     assert "click submit" in p

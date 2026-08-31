@@ -26,14 +26,22 @@
  * loops, not the normal mechanism for finishing a task.
  */
 
-import type { PlannedAction, ActionResult } from "../executor/action-executor";
-import { ActionExecutor } from "../executor/action-executor";
+import type { PlannedAction, ActionResult, AskUserInfo } from "../executor/action-executor";
+import { ActionExecutor, type ExecuteResult } from "../executor/action-executor";
 import { PlanningContext } from "./action-planner";
 import { LLMPlanner, PlannerConfig, PlannerResult } from "../llm/llm-planner";
 import { ActionHistoryEntry } from "../llm/action-schema";
 import { extractPageDOM } from "../content/dom-extractor";
 import { PrivacyFirewall } from "../privacy/privacy-firewall";
 import type { SanitizedPageDOM } from "../privacy/privacy-types";
+import { extractDataFromPromptFiltered, hasExtractedData } from "../privacy/prompt-extractor";
+import {
+  getProfileTokenHints,
+  setSelectedProfileId,
+  type LocalProfileValues,
+  upsertLocalProfile,
+} from "../privacy/profile-store";
+import { perceivePage } from "../perception/perception-pipeline";
 
 const DEFAULT_MAX_ITERATIONS = 8;
 
@@ -45,6 +53,7 @@ export type AgentActivityKind =
   | "action_validated"
   | "action_executed"
   | "action_rejected"
+  | "missing_info"
   | "iteration_complete"
   | "error"
   | "info";
@@ -84,7 +93,8 @@ export type TaskPhase =
   | "failed"
   | "cancelled"
   | "max_iterations_reached"
-  | "offline";
+  | "offline"
+  | "paused"; // new — waiting for user to supply missing field value
 
 export interface TaskOutcome {
   phase: TaskPhase;
@@ -109,6 +119,16 @@ export class AgentSession {
   private cancelled = false;
   private maxIterations: number;
   private lastSanitized: SanitizedPageDOM | null = null;
+  private sessionProfile: LocalProfileValues | null = null; // Extracted from user prompts
+
+  /**
+   * When the executor needs user input (AskUserInfo), the loop pauses
+   * and stores the pending action here. When the user replies, the
+   * caller calls resumeWithValue() to inject the resolved value and
+   * continue the loop from where it left off.
+   */
+  private pausedAction: PlannedAction | null = null;
+  private pausedAskInfo: AskUserInfo | null = null;
 
   constructor(
     callbacks: AgentSessionCallbacks = {},
@@ -116,11 +136,14 @@ export class AgentSession {
   ) {
     this.callbacks = callbacks;
     this.privacyFirewall = new PrivacyFirewall();
-    this.executor = new ActionExecutor({ privacyFirewall: this.privacyFirewall });
+    this.executor = new ActionExecutor({
+      privacyFirewall: this.privacyFirewall,
+      sessionProfile: () => this.sessionProfile,
+    });
     this.llmPlanner = new LLMPlanner(
       plannerConfig || {
         serverUrl: "http://127.0.0.1:8001",
-        onDeviceModel: "onnx-community/Qwen2.5-1.5B-Instruct",
+        onDeviceModel: "onnx-community/Qwen2.5-0.5B-Instruct",
       }
     );
     this.maxIterations = DEFAULT_MAX_ITERATIONS;
@@ -128,6 +151,10 @@ export class AgentSession {
 
   setPlannerConfig(config: PlannerConfig): void {
     this.llmPlanner.setConfig(config);
+  }
+
+  getSessionProfile(): LocalProfileValues | null {
+    return this.sessionProfile;
   }
 
   /** Wire the popup's "Auto-redact" toggle to the firewall. */
@@ -208,6 +235,122 @@ export class AgentSession {
 
   cancel(): void {
     this.cancelled = true;
+    this.pausedAction = null;
+    this.pausedAskInfo = null;
+  }
+
+  /**
+   * Check if the session is paused waiting for user input.
+   */
+  isPaused(): boolean {
+    return this.pausedAction !== null && this.pausedAskInfo !== null;
+  }
+
+  /**
+   * Get the field the session is waiting for (when paused).
+   */
+  getPausedField(): string | null {
+    return this.pausedAskInfo?.field ?? null;
+  }
+
+  /**
+   * Called by the UI when the user supplies a value in the chat.
+   * Injects the value into sessionProfile and retries the paused action.
+   * The caller passes the raw (unsanitized) user reply — we sanitize it
+   * here so the injected value is available to the executor.
+   */
+  async resumeWithValue(userReply: string): Promise<TaskOutcome> {
+    if (!this.pausedAction || !this.pausedAskInfo) {
+      return this.runPrompt(userReply);
+    }
+
+    const field = this.pausedAskInfo.field;
+    // Inject the raw reply value into the session profile so the executor
+    // can pick it up when it retries.
+    this.sessionProfile = this.sessionProfile ?? {};
+    this.sessionProfile[field] = userReply;
+
+    // Also persist to saved profiles so the value is available next time.
+    const { normalizeFieldKey, upsertLocalProfile } = await import(
+      "../privacy/profile-store"
+    );
+    const { getSelectedProfile } = await import("../privacy/profile-store");
+    const selected = await getSelectedProfile();
+    const entry = {
+      id: selected?.id ?? `session-${Date.now()}`,
+      label: selected?.label ?? "In-chat profile",
+      createdAt: selected?.createdAt ?? Date.now(),
+      values: {
+        ...(selected?.values ?? {}),
+        [normalizeFieldKey(field)]: userReply,
+      },
+    };
+    await upsertLocalProfile(entry);
+
+    const action = this.pausedAction;
+    const askInfo = this.pausedAskInfo;
+    this.pausedAction = null;
+    this.pausedAskInfo = null;
+
+    this.push({
+      kind: "info",
+      text: `Got it — filling [${humanizeField(field)}] now`,
+      detail: userReply.length > 0 ? `${userReply.length} chars` : "empty",
+    });
+
+    // Retry the action directly with the updated sessionProfile.
+    const result = await this.executor.execute(action);
+
+    if ("askUser" in result) {
+      // Still can't resolve — surface the new ask-info too.
+      this.pausedAction = action;
+      this.pausedAskInfo = result.askUser;
+      this.push({
+        kind: "missing_info",
+        text: `Still need [${humanizeField(result.askUser.field)}]. Try again?`,
+        detail: `Field: ${result.askUser.field}`,
+        meta: result.askUser,
+      });
+      return {
+        phase: "paused",
+        iterations: 1,
+        actionsPlanned: 1,
+        actionsExecuted: 0,
+        durationMs: 0,
+        reason: `Still waiting for ${humanizeField(result.askUser.field)}`,
+      };
+    }
+
+    if (!result.success) {
+      this.push({
+        kind: "error",
+        text: result.message,
+        detail: "Action failed after injecting value",
+      });
+      return {
+        phase: "failed",
+        iterations: 1,
+        actionsPlanned: 1,
+        actionsExecuted: 0,
+        durationMs: 0,
+        reason: result.message,
+      };
+    }
+
+    this.push({
+      kind: "action_executed",
+      text: result.message,
+      detail: `${result.durationMs.toFixed(0)}ms`,
+    });
+
+    return {
+      phase: "completed",
+      iterations: 1,
+      actionsPlanned: 1,
+      actionsExecuted: 1,
+      durationMs: result.durationMs,
+      reason: "Value supplied and field filled",
+    };
   }
 
   /**
@@ -219,17 +362,37 @@ export class AgentSession {
     const startedAt = performance.now();
     this.cancelled = false;
 
+    // BEFORE sanitization: extract personal data fields from the original prompt
+    // (e.g., "my name is X, email is Y"). Store as session profile for form filling.
+    const rawPrompt = prompt;
+    const extracted = extractDataFromPromptFiltered(rawPrompt, 0.65);
+    if (hasExtractedData(extracted)) {
+      this.sessionProfile = extracted;
+      const fieldNames = Object.keys(extracted).filter((k) => extracted[k as keyof LocalProfileValues]);
+      await this.persistPromptProfile(extracted);
+      this.push({
+        kind: "info",
+        text: `Saved local profile detail(s): ${fieldNames.join(", ")}`,
+      });
+    }
+
     // PRIVACY: the prompt itself may contain raw PII ("fill email
     // abc@gmail.com"). Tokenize it BEFORE it reaches any server-bound
     // path (planner + action history). Without this, providers with
     // content moderation (e.g. OpenRouter) reject the request and the
     // agent shows "offline" (HTTP 502 llm_unavailable).
     prompt = this.privacyFirewall.sanitizeFreeText(prompt);
+    const plannerPrompt = await this.buildPlannerPrompt(prompt);
 
     // Echo user message (tokenized form — visible proof of redaction)
     this.push({ kind: "user", text: prompt });
 
     // Per-prompt state.
+    const promptActionHistory: Array<{
+      prompt: string;
+      action: PlannedAction;
+      result?: ActionResult;
+    }> = [];
     let iteration = 0;
     let actionsPlanned = 0;
     let actionsExecuted = 0;
@@ -261,12 +424,15 @@ export class AgentSession {
         });
       }
 
-      // 1. Capture current page state (DOM only — fast path)
+      // 1. Capture current page state. DOM is always used for stable
+      // selectors; the visual pipeline runs locally and contributes only
+      // redacted/sanitized metadata.
       if (iteration === 1) {
-        this.push({ kind: "stage", text: "Analyzing page", detail: "Reading DOM structure" });
+        this.push({ kind: "stage", text: "Analyzing page", detail: "Reading visual state and DOM structure" });
       }
       const rawDOM = extractPageDOM();
       const sanitizedDOM = this.privacyFirewall.sanitizePage(rawDOM);
+      await this.attachVisualSummary(sanitizedDOM, iteration);
       this.lastSanitized = sanitizedDOM;
 
       // 2. Privacy processing (only narrate on the first iteration)
@@ -297,9 +463,9 @@ export class AgentSession {
       });
       const planningCtx: PlanningContext = {
         sanitizedDOM,
-        actionHistory: this.actionHistory.map((h) => h.action),
+        actionHistory: promptActionHistory.map((h) => h.action),
       };
-      const llmHistory: ActionHistoryEntry[] = this.actionHistory.map((h) => ({
+      const llmHistory: ActionHistoryEntry[] = promptActionHistory.map((h) => ({
         prompt: h.prompt,
         action: {
           action: h.action.action,
@@ -315,7 +481,7 @@ export class AgentSession {
           : undefined,
       }));
 
-      const planResult = await this.llmPlanner.plan(planningCtx, prompt, llmHistory);
+      const planResult = await this.llmPlanner.plan(planningCtx, plannerPrompt, llmHistory);
 
       // Surface the planner's backend label to whatever UI wants it
       this.callbacks.onPlanResult?.(planResult);
@@ -367,7 +533,19 @@ export class AgentSession {
       // NOT replace the planner's completion signal. We compare the
       // action's full executable signature (type + target + value +
       // direction + amount).
-      if (this.wasActionExecutedSuccessfully(action)) {
+      if (this.wasActionExecutedSuccessfully(action, promptActionHistory)) {
+        if (action.action === "wait") {
+          // If the planner repeated a wait action, it is waiting for an element that is not on page.
+          phase = "failed";
+          reason = action.reasoning || "No matching element found on the page";
+          this.push({
+            kind: "error",
+            text: action.reasoning || "Could not find a matching element for this action",
+            detail: "Try specifying which field or button you want to interact with.",
+          });
+          break;
+        }
+
         phase = "completed";
         reason = "Task satisfied — no further action required";
         this.push({
@@ -409,7 +587,9 @@ export class AgentSession {
           text: `Action rejected: ${reasonText}${hint}`,
           detail: `Confidence ${action.confidence.toFixed(2)}`,
         });
-        this.actionHistory.push({ prompt, action, result: undefined });
+        const historyEntry = { prompt: plannerPrompt, action, result: undefined };
+        promptActionHistory.push(historyEntry);
+        this.actionHistory.push(historyEntry);
         phase = "failed";
         reason = `Action validation failed: ${reasonText}`;
         break;
@@ -423,8 +603,46 @@ export class AgentSession {
         text: "Executing action",
         detail: action.action,
       });
-      const result = await this.executor.execute(action);
-      this.actionHistory.push({ prompt, action, result });
+      const result: ExecuteResult = await this.executor.execute(action);
+
+      // ── Ask-User signal: the executor needs a value the user must supply ──
+      if ("askUser" in result) {
+        this.pausedAction = action;
+        this.pausedAskInfo = result.askUser;
+        const { field, candidates } = result.askUser;
+
+        // Build the friendly prompt shown in the chat.
+        let promptText = `I need your **${humanizeField(field)}** to fill this field. `;
+        if (candidates.length > 0) {
+          const options = candidates
+            .map((c) => `${c.profileLabel} (${c.masked})`)
+            .join(", ");
+          promptText += `You have saved values in: ${options}. Type your value in the chat below.`;
+        } else {
+          promptText +=
+            "I don't have it saved. Just type it in the chat below and I'll fill the field for you.";
+        }
+
+        this.push({
+          kind: "missing_info",
+          text: promptText,
+          detail: `Field: ${field}`,
+          meta: { field, candidates },
+        });
+
+        return {
+          phase: "paused",
+          iterations: iteration,
+          actionsPlanned,
+          actionsExecuted,
+          durationMs: performance.now() - startedAt,
+          reason: `Waiting for user to supply ${humanizeField(field)}`,
+        };
+      }
+
+      const historyEntry = { prompt: plannerPrompt, action, result };
+      promptActionHistory.push(historyEntry);
+      this.actionHistory.push(historyEntry);
 
       if (!result.success) {
         actionsExecuted++;
@@ -528,8 +746,11 @@ export class AgentSession {
    * successfully for the SAME prompt. Used to detect stuck loops
    * where the planner keeps re-emitting the same action.
    */
-  private wasActionExecutedSuccessfully(action: PlannedAction): boolean {
-    for (const h of this.actionHistory) {
+  private wasActionExecutedSuccessfully(
+    action: PlannedAction,
+    history: Array<{ action: PlannedAction; result?: ActionResult }>
+  ): boolean {
+    for (const h of history) {
       if (h.result?.success !== true) continue;
       if (isSameAction(h.action, action)) return true;
     }
@@ -549,6 +770,86 @@ export class AgentSession {
 
   private delay(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
+  }
+
+  private async buildPlannerPrompt(prompt: string): Promise<string> {
+    const hints = await getProfileTokenHints();
+    if (hints.length === 0) return prompt;
+    const safeHints = hints.map((hint) => `${hint.field}=${hint.token}`).join(", ");
+    return `${prompt}\n\nLOCAL_PROFILE_FIELDS_AVAILABLE: ${safeHints}. When the task asks to use the user's saved/local details, use the matching [PROFILE:field] token as the type value. If a required profile field is not listed, ask for it by returning a wait action with that field in reasoning.`;
+  }
+
+  private async persistPromptProfile(values: LocalProfileValues): Promise<void> {
+    const clean = Object.fromEntries(
+      Object.entries(values).filter(([, value]) => typeof value === "string" && value.trim())
+    ) as LocalProfileValues;
+    if (!hasExtractedData(clean)) return;
+    const label = clean.name || clean.email || clean.phone || "Chat-provided profile";
+    const profile = {
+      id: `profile-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      label,
+      createdAt: Date.now(),
+      values: clean,
+    };
+    await upsertLocalProfile(profile);
+    await setSelectedProfileId(profile.id);
+  }
+
+  private async attachVisualSummary(sanitizedDOM: SanitizedPageDOM, iteration: number): Promise<void> {
+    if (!this.privacyFirewall.isEnabled()) return;
+    try {
+      const result = await withTimeout(perceivePage(), 7000);
+      const visualRegions = result.sensitiveDataMap.regions
+        .filter((region) => region.source === "ocr" || region.source === "cv" || region.boundingBox)
+        .slice(0, 20);
+      for (const region of visualRegions) {
+        sanitizedDOM.elements.push({
+          tag: "rv-visual-region",
+          id: region.id,
+          classes: [],
+          type: region.type,
+          name: region.source,
+          text: `${region.type} visual region protected as ${region.token}`,
+          value: region.token,
+          placeholder: null,
+          ariaLabel: `Protected ${region.type} detected visually`,
+          label: "",
+          selector: region.selector || `[data-rv-visual-region="${region.id}"]`,
+        });
+      }
+      if (iteration === 1) {
+        this.push({
+          kind: "stage",
+          text: "Visual privacy scan",
+          detail:
+            visualRegions.length > 0
+              ? `${visualRegions.length} visual/OCR region(s) protected locally`
+              : `No visual PII detected (${result.executedDetectors.join(", ") || "DOM only"})`,
+        });
+      }
+    } catch (e) {
+      if (iteration === 1) {
+        this.push({
+          kind: "info",
+          text: "Visual scan unavailable",
+          detail: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -612,6 +913,43 @@ function maskSensitiveValue(v: string): string {
   const tail = v.slice(-1);
   const middle = "•".repeat(Math.min(v.length - 3, 10));
   return `${head}${middle}${tail}`;
+}
+
+/**
+ * Convert a normalized field key into a human-readable label.
+ * e.g. "pan_card" → "PAN card", "full_name" → "Full name",
+ *      "application_id" → "Application ID"
+ */
+function humanizeField(field: string): string {
+  const KNOWN: Record<string, string> = {
+    name: "Full Name",
+    full_name: "Full Name",
+    fullname: "Full Name",
+    email: "Email",
+    phone: "Phone Number",
+    mobile: "Phone Number",
+    address: "Address",
+    city: "City",
+    company: "Company",
+    job_title: "Job Title",
+    jobtitle: "Job Title",
+    password: "Password",
+    pan_card: "PAN Card Number",
+    pancard: "PAN Card Number",
+    aadhaar: "Aadhaar Number",
+    application_id: "Application ID",
+    app_id: "Application ID",
+    applicationid: "Application ID",
+    passport: "Passport Number",
+    dob: "Date of Birth",
+    date_of_birth: "Date of Birth",
+  };
+  const lower = field.toLowerCase().replace(/\s+/g, "_");
+  if (KNOWN[lower]) return KNOWN[lower];
+  // Generic: "my_field" → "My Field", "field123" → "Field123"
+  return field
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function buildPlannedDetail(action: PlannedAction, planResult: PlannerResult): string {

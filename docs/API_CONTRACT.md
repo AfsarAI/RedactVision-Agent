@@ -81,12 +81,14 @@ Type example:
     "id": "email",
     "selector": "#email"
   },
-  "value": "[EMAIL_01]",
+  "value": "[PROFILE:email]",
   "confidence": 0.95
 }
 ```
 
-The client resolves `[EMAIL_01]` locally only after validation and policy checks.
+The client resolves `[EMAIL_01]` page tokens or `[PROFILE:email]` local-profile
+tokens only after validation and policy checks. Profile values are encrypted at
+rest in the browser and are never included in the server request.
 
 ## Allowed actions
 

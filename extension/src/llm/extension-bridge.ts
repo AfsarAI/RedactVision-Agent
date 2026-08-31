@@ -49,6 +49,14 @@ export interface PlanBridgeResult {
   error?: string;
 }
 
+export interface ScreenshotBridgeResult {
+  ok: boolean;
+  dataUrl: string | null;
+  width: number;
+  height: number;
+  error?: string;
+}
+
 /** True when we're running inside a Chrome extension context. */
 export function isInExtensionContext(): boolean {
   return (
@@ -88,6 +96,14 @@ export async function planViaServer(
     return resp as PlanBridgeResult;
   }
   return planViaServerDirect(req);
+}
+
+export async function captureVisibleTabViaBackground(): Promise<ScreenshotBridgeResult> {
+  if (isInExtensionContext()) {
+    const resp = await chrome.runtime.sendMessage({ type: "RV_CAPTURE_VISIBLE_TAB" });
+    return resp as ScreenshotBridgeResult;
+  }
+  return { ok: false, dataUrl: null, width: 0, height: 0, error: "Not in extension context" };
 }
 
 // ----- Direct-fetch fallbacks (used by tests / non-extension contexts) -----

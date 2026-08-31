@@ -307,7 +307,7 @@ const STORAGE_KEY = "rv_agent_config";
 
 export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
   serverUrl: "http://127.0.0.1:8001",
-  onDeviceModel: "onnx-community/Qwen2.5-1.5B-Instruct",
+  onDeviceModel: "onnx-community/Qwen2.5-0.5B-Instruct",
   backend: "server",
 };
 

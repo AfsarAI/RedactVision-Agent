@@ -334,16 +334,35 @@ async function openInPagePanelAsync(): Promise<void> {
     ui.setInputEnabled(false);
     ui.setStatus("thinking", "Working…");
     try {
-      const outcome = await session.runPrompt(text);
+      // If the session is paused (waiting for user input), resume it.
+      // Otherwise start a fresh prompt.
+      const outcome =
+        session.isPaused()
+          ? await session.resumeWithValue(text)
+          : await session.runPrompt(text);
+
       const finalPhase = outcome.phase;
+
+      // "paused" means the executor still couldn't resolve the value.
+      // Re-enable input so the user can try again with a different reply.
+      if (finalPhase === "paused") {
+        ui.setStatus("thinking", "Waiting for input…");
+        ui.setInputEnabled(true);
+        // No summary card for paused — just leave the missing_info
+        // activity visible so the user knows what to type.
+        return;
+      }
+
       const isCompleted = finalPhase === "completed";
       const isFailed = finalPhase === "failed" || finalPhase === "max_iterations_reached" || finalPhase === "cancelled";
       const isOffline = finalPhase === "offline";
       const uiPhase = isCompleted ? "completed" : (isFailed || isOffline) ? "error" : "thinking";
+
       // After the prompt, re-summarize (page state may have changed).
       ui.setRedactionSummary(session.getRedactionSummary(false));
       // Refresh the sanitized-data snapshot for the details panel.
       ui.setSanitizedData(session.getSanitizedData());
+
       // Render the polished end-of-task summary card.
       const summaryPhase = isCompleted
         ? "completed"

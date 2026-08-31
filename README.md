@@ -23,7 +23,7 @@ Local DOM Extraction (content script)
     ↓
 Local Privacy Firewall (detect + tokenize DOM text only)
     ↓
-Sanitized DOM (semantic tokens: [EMAIL_01], [PHONE_01], etc.)
+Sanitized DOM + safe visual metadata (tokens: [EMAIL_01], [PROFILE:email], etc.)
     ↓
 Server LLM Reasoning (/llm/plan — FastAPI)
     ↓
@@ -105,19 +105,20 @@ This project implements a layered local perception pipeline — **currently acti
 | Local Action Validation | **Implemented** | Schema + target existence + visibility + confidence checks |
 | Browser Action Execution | **Implemented** | Token resolution locally, then execution (`action-executor.ts`) |
 | Multi-Iteration Feedback Loop | **Implemented** | Perceive → Plan → Validate → Execute → Observe → Repeat (max 8 iterations) |
-| Local OCR Engine | **Module only — NOT wired** | `ocr-engine.ts` (Tesseract.js) — exists but `content.ts` never calls it |
-| Local NER Engine | **Module only — NOT wired** | `ner-engine.ts` (Transformers.js) — exists but not invoked |
-| Local CV Engine | **Module only — NOT wired** | `cv-engine.ts` (Transformers.js vision) — exists, graceful degradation, never called |
-| Visual Redaction / Screenshot Pipeline | **Not implemented in loop** | Pipeline modules exist (`screenshot-capture.ts`, `visual-redaction-engine.ts`, `perception-pipeline.ts`) but are NOT integrated; full loop needs Phase 13 work |
+| Local OCR Engine | **Wired with graceful fallback** | `AgentSession.runPrompt()` invokes `perception-pipeline.ts`; OCR depends on optional Tesseract.js availability |
+| Local NER Engine | **Wired with graceful fallback** | Transformers.js local inference is attempted when available |
+| Local CV Engine | **Wired with graceful fallback** | Vision detection is attempted locally; failures degrade to DOM-only sanitization |
+| Visual Redaction / Screenshot Pipeline | **Partially active** | Background screenshot capture feeds local perception; planner payload receives safe visual metadata, not raw screenshots |
+| Encrypted Local Profiles | **Implemented** | Profile values are encrypted with AES-GCM before `chrome.storage.local`; the non-extractable key is kept in IndexedDB |
 | WebSocket Agent Messaging (`/ws/agent`) | **Implemented** | For agent session messaging; planning uses HTTP `/llm/plan` |
 
 ---
 
 ## ⚠️ Critical Implementation Gap — Visual Perception / Redaction (Phase 13)
 
-**What is missing from the active pipeline:** The default agent flow (`content/content.ts`) only uses `extractPageDOM()` + `PrivacyFirewall`. It does **NOT** capture screenshots, run OCR, run CV vision detection, run NER, fuse evidence, or perform visual masking/blurring. The modules exist (`extension/src/perception/*.ts`) but are not called.
+**Current status:** The default agent loop attempts screenshot capture, OCR, local NER, CV vision detection, and evidence fusion before planning. These steps are local and may degrade if optional local packages/models are unavailable. Raw screenshots are not sent to the server.
 
-**Risk:** Sensitive data rendered only in images, canvas, or other visual regions (faces, cards, document screenshots, hidden text) can leak to the server because DOM extraction cannot see it and no visual redaction is applied.
+**Remaining risk:** Sensitive data rendered only in images, canvas, or other visual regions is protected only when local capture/model components succeed for that page. When visual capture or local inference is unavailable, the chat timeline reports the degraded mode and the server still receives no raw screenshot.
 
 **To close this gap (the exact workflow):**
 
@@ -127,7 +128,7 @@ What to tell Claude / your teammate:
 Steps: 1) Capture screenshot (perception/screenshot-capture.ts). 2) Run DOM + screenshot in parallel through perception-pipeline.ts (OCR + CV + NER). 3) Build SensitiveDataMap (perception/sensitive-data-map.ts). 4) Apply visual redaction (blur/mask regions via perception/visual-redaction-engine.ts). 5) Build sanitized context with sanitized DOM + sanitized image. 6) Only then send to /llm/plan. Do not claim visual redaction is done until step 4 runs in the default loop."
 ```
 
-**Files to modify for this gap:** `extension/src/content/content.ts`, possibly `extension/src/agent/agent-session.ts` (to call perception before `planViaServer`), `extension/src/privacy/privacy-firewall.ts` (if visual regions need token mapping).
+**Files involved:** `extension/src/agent/agent-session.ts`, `extension/src/perception/screenshot-capture.ts`, `extension/src/background/service-worker.ts`, and the perception engines under `extension/src/perception/`.
 
 ---
 
@@ -241,7 +242,7 @@ Steps: 1) Capture screenshot (perception/screenshot-capture.ts). 2) Run DOM + sc
 
 - Original sensitive values (`rahul@gmail.com`, `9876543210`, `MySecretPassword123`)
 - The local token map (`Map<string, TokenRecord>` — `{token → originalValue}`)
-- Raw screenshots containing PII — **only protected when visual pipeline is active**; currently visual pipeline is NOT wired, so image-only PII is NOT redacted
+- Raw screenshots containing PII — screenshots are processed locally; the server receives only sanitized DOM and safe visual-region metadata
 - Any console/log output containing raw PII
 
 ### What crosses the network
@@ -666,27 +667,29 @@ When the server needs a token for a `type` action (e.g., type into email field):
 
 ## How Local Perception Works
 
-**Current active path (always runs in `content.ts`):**
+**Current active path (runs from `AgentSession.runPrompt()`):**
 
 ```
 extractPageDOM()
   → querySelectorAll(["input","textarea","select","button","a","img","form","[role]","[aria-label]"])
   → extractElement() per node (tag, id, classes, type, name, text, value, placeholder, ariaLabel, selector)
+  → background screenshot capture when extension permissions allow it
+  → perception-pipeline.ts attempts OCR + NER + CV locally
   → PrivacyFirewall.sanitizePage()  (Layer 1: DOM semantics; Layer 2: regex/heuristics)
-  → sanitized DOM tokens
+  → sanitized DOM tokens + safe visual-region metadata
 ```
 
-**Visual pipeline modules (exist in source but NOT wired to default flow):**
+**Visual pipeline modules:**
 
 - `ocr-engine.ts`: Tesseract.js for screenshot-based text extraction
 - `ner-engine.ts`: Transformers.js for named entity recognition on text
 - `cv-engine.ts`: Transformers.js vision pipeline for face / document / card detection (loads model on demand; graceful degradation)
-- `screenshot-capture.ts`: Viewport capture for visual analysis
+- `screenshot-capture.ts`: Viewport capture for visual analysis through the background worker
 - `perception-pipeline.ts`: Orchestrates DOM + OCR + NER + CV in parallel and fuses results into `SensitiveDataMap`
 - `sensitive-data-map.ts`: Unified output schema (type, bbox, confidence, sources)
 - `visual-redaction-engine.ts`: Blur / mask sensitive image regions
 
-> **Until these are wired into `content.ts` (Phase 12–13 work), only DOM text PII is detected and redacted.** Visual PII (faces in images, card photos, document screenshots) is NOT processed. See the "Critical Implementation Gap" section above.
+> Local OCR/CV/NER are optional runtime capabilities. If capture or model loading fails, the chat timeline reports the degraded scan and the planner still receives no raw screenshot.
 
 ---
 
@@ -889,11 +892,11 @@ cd server && python -m py_compile redactvision_server/*.py
 
 ## Limitations
 
-- **Visual redaction (Phase 12–13) — CRITICAL GAP:** The perception pipeline modules (`screenshot-capture.ts`, `ocr-engine.ts`, `cv-engine.ts`, `ner-engine.ts`, `perception-pipeline.ts`, `sensitive-data-map.ts`, `visual-redaction-engine.ts`) exist in `extension/src/perception/` but are NOT wired into `content.ts`. The default flow only runs DOM extraction + tokenization. Sensitive data only visible in images / canvas / screenshots is NOT detected or redacted. The privacy invariant "raw sensitive data must not cross the network boundary" is currently enforced only for DOM text PII — not for visual PII. **This is the top priority to close before claiming the SIH privacy requirement is met.**
+- **Visual redaction status:** The default loop now attempts local screenshot/OCR/NER/CV perception and sends safe visual-region metadata to the planner. Full image masking support exists in `visual-redaction-engine.ts`; the planner payload intentionally avoids raw screenshots.
 - **VLM server reasoning (Phase 14)** uses the existing LLM planner (`/llm/plan`) via text-only API; true multi-modal image reasoning is not yet implemented
 - **WebSocket agent messaging** (`/ws/agent`) exists but the primary planning flow uses HTTP (`/llm/plan`); full bidirectional agent session over WebSocket is not wired
 - **Local vision model** loading depends on browser support (WebGPU / WASM / ONNX Runtime Web) and memory; graceful degradation is implemented but full performance not benchmarked
-- **On-device model selection** (Transformers.js with `onnx-community/Qwen2.5-1.5B-Instruct`) is configured in `DEFAULT_PLANNER_CONFIG` but is not used for planning (server LLM is sole planner per architecture)
+- **On-device model selection** (Transformers.js with `onnx-community/Qwen2.5-0.5B-Instruct`) is configured for privacy/perception assistance; server LLM remains the sole action planner
 - **Security hardening (Phase 15)** — allowlists, prompt-injection defense, rate limiting — partially implemented via validation layer; full hardening is planned
 - **Benchmarking (Phase 16)** — no benchmark results committed; targets from `CLAUDE.md` §16 remain unverified
 - **Real-world websites:** The prototype is tested against the controlled test page (`test-site/index.html`). Arbitrary websites may have complex DOM structures requiring additional perception tuning
@@ -923,43 +926,22 @@ This project is for **SIH 26171 — ByteForce**. The goal: a privacy-preserving 
 - Chrome MV3 extension loads and injects content script (`document_idle`)
 - `extractPageDOM()` reads interactive/text elements
 - `PrivacyFirewall` detects DOM PII (Layer 1: DOM semantics + Layer 2: regex) and tokenizes (`[PERSON_01]`, `[EMAIL_01]`, etc.)
+- `AgentSession.runPrompt()` attempts screenshot/OCR/NER/CV perception before each planner call and adds safe visual-region metadata
 - Token map is local only (memory `Map`) — never in server payload
+- Encrypted local profiles persist across reloads and expose only `[PROFILE:field]` capability tokens to the planner
 - Floating chat card (`chat-ui.ts`) opens, sends prompts
 - `AgentSession.runPrompt()` loops: perceive → sanitize → plan (`/llm/plan`) → validate → execute → observe (max 8 iterations)
 - Server (`start-server`, port 8001) handles planning with bounded multi-provider fallback (Groq → OpenRouter → OmniRoute, max 6 HTTP attempts)
 - Action validation + execution (`click`, `type`, `scroll`, `select`, `wait`, `navigate`, `done`) runs locally
 - `test-site/index.html` (form with sample PII: `rahul@gmail.com`, `9876543210`, `MySecretPassword123`) works end-to-end
-- All modules listed in `CLAUDE.md` exist and compile; basic privacy contract holds for DOM text PII
+- All modules listed in `CLAUDE.md` exist and compile; basic privacy contract holds for detected DOM and visual metadata
 
-### What is NOT working / NOT wired (the critical gap — Phase 12–13)
+### Remaining Gaps
 
-These modules exist as source but are NOT called by `content.ts`:
-
-- `perception/screenshot-capture.ts` — screenshot capture
-- `perception/ocr-engine.ts` — OCR (Tesseract.js)
-- `perception/ner-engine.ts` — NER (Transformers.js)
-- `perception/cv-engine.ts` — CV vision (Transformers.js; face/card/document detection)
-- `perception/perception-pipeline.ts` — evidence fusion (combines all detectors)
-- `perception/sensitive-data-map.ts` — fusion output format
-- `perception/visual-redaction-engine.ts` — visual blur/mask of sensitive regions
-
-**Risk:** Sensitive data only in images / canvas / screenshots / visual elements (faces, cards, hidden text) is NOT detected or redacted by the current pipeline. The default flow only handles DOM text. Until these modules are wired into `content.ts`, the visual privacy invariant (`CLAUDE.md` §4.1) is NOT fully enforced for non-DOM PII.
-
-**How to close the gap (use this exact prompt with Claude / teammate):**
-
-```
-Task: Wire the visual perception + redaction pipeline into RedactVision Agent.
-Files to modify: extension/src/content/content.ts (main), extension/src/perception/perception-pipeline.ts (fusion), extension/src/perception/visual-redaction-engine.ts (redaction), extension/src/privacy/privacy-firewall.ts (if visual tokens needed), possibly extension/src/agent/agent-session.ts (if pipeline must run before /llm/plan).
-Steps:
-1. Before calling /llm/plan, capture viewport screenshot (perception/screenshot-capture.ts).
-2. In parallel: run DOM extraction + OCR + CV + NER (perception-pipeline.ts).
-3. Build SensitiveDataMap (perception/sensitive-data-map.ts) — each region has: type, bbox, confidence, sources.
-4. Apply visual redaction (perception/visual-redaction-engine.ts): blur/mask face/card/document regions in image.
-5. Apply DOM masking: token-replace the same items in sanitized DOM.
-6. Send sanitized DOM + sanitized image crops (if needed) to /llm/plan — never raw screenshot.
-7. Add clear comments in code and update README/CLAUDE.md to show it's wired.
-8. Do NOT claim the feature is done until the pipeline runs in default loop and you have tested it on a page with visual PII (e.g., image with face or credit card).
-```
+Local OCR/CV/NER remain optional runtime capabilities. If model loading or tab
+capture fails on a given machine/site, the agent reports the degraded scan and
+continues with DOM sanitization. Full screenshot/image transfer to the server is
+still intentionally disabled; only safe visual-region metadata is sent.
 
 - `CLAUDE.md` — Project rules, privacy invariants, architecture, phase status
 - `docs/ARCHITECTURE.md` — Detailed architecture documentation

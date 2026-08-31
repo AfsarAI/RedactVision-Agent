@@ -29,6 +29,9 @@ export interface SanitizedElement {
   value: string | null;
   placeholder: string | null;
   ariaLabel: string | null;
+  /** Text from the associated <label> element — primary signal for
+   *  the local LLM to determine field semantics dynamically. */
+  label: string;
   selector: string;
 }
 

@@ -9,13 +9,14 @@ export type DetectionSource =
   | "placeholder"
   | "ariaLabel";
 
-interface DetectionContext {
+export interface DetectionContext {
   tag: string;
   type: string | null;
   name: string | null;
   id: string | null;
   placeholder: string | null;
   ariaLabel: string | null;
+  label?: string | null;
   source: DetectionSource;
 }
 
@@ -66,33 +67,35 @@ function detectPhones(
     context.name,
     context.id,
     context.placeholder,
-    context.ariaLabel
+    context.ariaLabel,
+    context.label
   ]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
 
   const looksLikePhoneField =
+    context.type === "tel" ||
     contextText.includes("phone") ||
     contextText.includes("mobile") ||
-    contextText.includes("tel");
+    contextText.includes("tel") ||
+    contextText.includes("contact");
 
-  if (!looksLikePhoneField) {
-    return matches;
-  }
-
-  const regex =
-    /(?:\+91[\s-]?)?[6-9]\d{9}\b/g;
+  // If text strictly matches a standalone phone format, or context hints it
+  const regex = /(?:\+91[\s-]?)?[6-9]\d{9}\b/g;
 
   for (const match of text.matchAll(regex)) {
     if (match.index !== undefined) {
-      matches.push(
-        createMatch(
-          "PHONE",
-          match[0],
-          match.index
-        )
-      );
+      // If it looks like a phone field, or the text is solely/mostly the phone number
+      if (looksLikePhoneField || text.trim() === match[0].trim()) {
+        matches.push(
+          createMatch(
+            "PHONE",
+            match[0],
+            match.index
+          )
+        );
+      }
     }
   }
 
@@ -178,7 +181,8 @@ function detectPassword(
     context.name,
     context.id,
     context.placeholder,
-    context.ariaLabel
+    context.ariaLabel,
+    context.label
   ]
     .filter(Boolean)
     .join(" ")
@@ -212,7 +216,8 @@ function detectPerson(
     context.name,
     context.id,
     context.placeholder,
-    context.ariaLabel
+    context.ariaLabel,
+    context.label
   ]
     .filter(Boolean)
     .join(" ")
@@ -220,7 +225,9 @@ function detectPerson(
 
   const looksLikeNameField =
     contextText.includes("name") ||
-    contextText.includes("person");
+    contextText.includes("person") ||
+    contextText.includes("applicant") ||
+    contextText.includes("full name");
 
   if (
     looksLikeNameField &&

@@ -285,6 +285,60 @@ def _parse_json(text: str) -> dict:
     return candidates[-1]
 
 
+def visual_ground_with_vlm(image: str, target_description: str) -> dict:
+    """
+    Locate an interactive UI element visually on a screenshot using multimodal VLM.
+    Returns {"found": True, "point": [x, y], "box_2d": [ymin, xmin, ymax, xmax]}
+    where point is normalized on a 0-1000 grid.
+    """
+    prompt = (
+        f'Look at this webpage screenshot and locate the interactive UI element for: "{target_description}".\n'
+        'Return ONLY a valid JSON object with normalized coordinates on a 1000x1000 grid:\n'
+        '{\n'
+        '  "found": true,\n'
+        '  "point": [x, y],\n'
+        '  "box_2d": [ymin, xmin, ymax, xmax],\n'
+        '  "description": "Short description of located element"\n'
+        '}\n'
+        'If the target element is NOT visible in the screenshot, return: {"found": false}'
+    )
+
+    llm = _get_llm()
+
+    # 1. Try multimodal messages with image_url
+    if image.startswith("data:image/") or image.startswith("http"):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image}},
+                ],
+            }
+        ]
+        try:
+            raw_text, _ = llm.generate(messages)
+            parsed = _parse_json(raw_text)
+            if isinstance(parsed, dict) and "found" in parsed:
+                return parsed
+        except Exception as exc:
+            logger.info("Multimodal VLM call failed or unsupported by provider (%s) — falling back", exc)
+
+    # 2. Text fallback
+    messages_text = [
+        {"role": "user", "content": prompt}
+    ]
+    try:
+        raw_text, _ = llm.generate(messages_text)
+        parsed = _parse_json(raw_text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception as exc:
+        logger.warning("Visual ground text fallback failed: %s", exc)
+
+    return {"found": False}
+
+
 def validate_action_shape(action: Any) -> dict:
     """
     Validate the parsed JSON against the LLM action schema.

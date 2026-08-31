@@ -114,17 +114,10 @@ class Provider(ABC):
 # ------------------------------------------------------------------
 # 1. Groq (PRIMARY)
 # ------------------------------------------------------------------
-# Live-tested on 2026-08-30 against the user's key:
-#   - groq/compound-mini   → JSON OK, 131k ctx
-#   - groq/compound        → 429 (rate-limited for org)
-#   - qwen/qwen3.8-27b     → JSON OK, 131k ctx
-#   - qwen/qwen3.6-27b     → 400 invalid JSON (rejected)
-#   - openai/gpt-oss-120b  → JSON OK, but rejects response_format=json_object
-# We therefore exclude qwen3.6-27b and prioritize compound-mini.
-GROQ_PRIMARY = "groq/compound-mini"
+GROQ_PRIMARY = "qwen/qwen3.8-27b"
 GROQ_FALLBACKS = [
-    "qwen/qwen3.8-27b",
-    "openai/gpt-oss-120b",
+    "groq/compound-mini",
+    "openai/gpt-oss-20b",
 ]
 
 
@@ -153,12 +146,10 @@ class GroqProvider(Provider):
                 "model": model,
                 "messages": messages,
                 "temperature": 0.1,
-                # Tight budget: a single action JSON needs < 200 tokens.
-                # A small cap leaves no room for chain-of-thought dumps.
-                "max_tokens": 500,
+                "max_tokens": 1024,
             }
-            # openai/gpt-oss-* routed through Groq rejects response_format.
-            if not model.startswith("openai/"):
+            # Only use json_object if not a safeguard model
+            if not model.startswith("meta-llama/"):
                 payload["response_format"] = {"type": "json_object"}
             try:
                 with httpx.Client(timeout=timeout) as client:
@@ -175,13 +166,20 @@ class GroqProvider(Provider):
             if resp.status_code == 200:
                 try:
                     body = resp.json()
-                    text = body["choices"][0]["message"]["content"]
-                    return text, None
+                    msg_obj = body["choices"][0]["message"]
+                    text = msg_obj.get("content") or msg_obj.get("reasoning") or msg_obj.get("reasoning_content") or ""
+                    if text and text.strip():
+                        return text, None
+                    last_error = f"Groq empty content for {model}"
+                    continue
                 except (KeyError, IndexError, TypeError, ValueError) as exc:
                     return "", f"Groq unexpected response shape: {exc}"
 
             # Failure path
             err = _err(resp.status_code, f"Groq HTTP {resp.status_code} for {model}: {resp.text[:160]}")
+            if resp.status_code == 429:
+                # Short pause before trying next candidate model on rate limit
+                time.sleep(0.4)
             if resp.status_code in (404, 410):
                 _blacklist_model("groq", model)
             last_error = err

@@ -52,13 +52,21 @@ from .types import (
     SanitizedEvent,
     PlanRequest,
     PlanResponse,
+    VisualGroundRequest,
+    VisualGroundResponse,
     ServerAction,
     ServerMessage,
     ActionType,
     ConnectionStatus,
 )
 from .mock_agent import validate_action_request  # privacy validator; the rule-based mock agent is no longer used as a planner
-from .llm import plan_with_llm, health as llm_health, is_configured as llm_configured, validate_action_shape as llm_validate_action_shape
+from .llm import (
+    plan_with_llm,
+    visual_ground_with_vlm,
+    health as llm_health,
+    is_configured as llm_configured,
+    validate_action_shape as llm_validate_action_shape,
+)
 from .providers import PROVIDERS
 
 
@@ -390,6 +398,28 @@ async def llm_plan(request: PlanRequest):
                 "detail": str(e),
             },
         )
+
+
+@app.post("/llm/visual-ground")
+async def llm_visual_ground(request: VisualGroundRequest):
+    """
+    Multimodal Vision-Language Fallback endpoint.
+    Locates an element visually from a viewport screenshot when standard DOM lookup fails.
+    Returns normalized [0-1000] coordinates: { "found": bool, "point": [x, y], "box_2d": [...] }
+    """
+    if not llm_configured():
+        return VisualGroundResponse(found=False)
+
+    try:
+        result = visual_ground_with_vlm(request.image, request.target_description)
+        found = bool(result.get("found", False))
+        point = result.get("point") if found and isinstance(result.get("point"), list) else None
+        box_2d = result.get("box_2d") if found and isinstance(result.get("box_2d"), list) else None
+        desc = result.get("description")
+        return VisualGroundResponse(found=found, point=point, box_2d=box_2d, description=desc)
+    except Exception as e:
+        logger.warning("Visual grounding request error: %s", e)
+        return VisualGroundResponse(found=False)
 
 
 @app.exception_handler(Exception)

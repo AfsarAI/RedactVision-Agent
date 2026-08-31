@@ -214,15 +214,36 @@ def validate_action_request(event: SanitizedEvent) -> tuple[bool, Optional[str]]
     if hasattr(event, "token_map") or (hasattr(event, "metadata") and event.metadata and "token_map" in str(event.metadata)):
         return False, "Privacy violation: token_map should not be sent to server"
 
-    # Check that no obvious raw PII is in elements
+    def _scan_string(field_name: str, value: object) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        if not value.strip():
+            return None
+        if "[EMAIL_" in value or "[PHONE_" in value or "[PERSON_" in value or "[PASSWORD_" in value:
+            return None
+        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", value):
+            return f"Privacy violation: possible raw email in {field_name}"
+        # Require 10-15 digits for actual phone numbers (optionally with + or standard dashes/spaces),
+        # not matching arbitrary numbers/years/counters like "2026" or "123".
+        if re.search(r"(?:\+?\d{1,3}[-.\s]?)?[6-9]\d{9}\b", value) or re.search(r"\b(?:\+?\d{1,3}[-.\s]?)?\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", value):
+            return f"Privacy violation: possible raw phone in {field_name}"
+        if re.search(r"(?i)\b(?:my\s+name\s+is|i\s+am|full\s+name\s+is)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+", value):
+            return f"Privacy violation: possible raw person name in {field_name}"
+        return None
+
+    for field_name, value in {
+        "prompt": getattr(event, "prompt", None),
+    }.items():
+        reason = _scan_string(field_name, value)
+        if reason:
+            return False, reason
+
     for element in (event.elements or []):
-        for field in ["value", "text"]:
-            value = element.get(field, "")
-            if value and isinstance(value, str):
-                # Basic heuristic check - server should not receive raw emails/phones
-                if re.match(r".*@.*\..*", value) and "[EMAIL" not in value:
-                    return False, f"Privacy violation: possible raw email in {field}"
-                if re.match(r"^\+?[\d\s-]{10,}$", value) and "[PHONE" not in value:
-                    return False, f"Privacy violation: possible raw phone in {field}"
+        if not isinstance(element, dict):
+            continue
+        for field in ["value", "text", "placeholder", "ariaLabel"]:
+            reason = _scan_string(f"{field} in element", element.get(field, ""))
+            if reason:
+                return False, reason
 
     return True, None

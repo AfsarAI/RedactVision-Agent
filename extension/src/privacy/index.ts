@@ -3,6 +3,7 @@
  */
 
 export { PrivacyFirewall } from "./privacy-firewall";
+export * from "./profile-store";
 
 export { redactScreenshot, generateSanitizedVisualSummary } from "./visual-redaction-engine";
 export type { RedactionOptions, RedactionResult, SanitizedVisualSummary } from "./visual-redaction-engine";
