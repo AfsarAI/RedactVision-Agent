@@ -1110,3 +1110,31 @@ function escapeHtml(s: string): string {
 function escapeAttr(s: string): string {
   return escapeHtml(s);
 }
+
+/* ---- Logo helpers (used by content script for the launcher pill) ---- */
+
+/** Returns the extension's logo URL from the icons/ folder. */
+export function rvLogoUrl(): string {
+  return chrome.runtime.getURL("icons/logo.png");
+}
+
+/**
+ * CSP-safe upgrade: if the browser can handle SVG, swap the `<img>` src
+ * to an inline SVG data-URL so it scales cleanly. Falls back to the
+ * supplied `fallback` (the PNG) when SVG rendering isn't possible.
+ */
+export async function upgradeLogoUrl(
+  img: HTMLImageElement,
+  fallback: string
+): Promise<void> {
+  try {
+    const resp = await fetch(chrome.runtime.getURL("icons/logo.svg"));
+    if (!resp.ok) return; // no SVG — stick with PNG
+    const svg = await resp.text();
+    const blob = new Blob([svg], { type: "image/svg+xml" });
+    img.src = URL.createObjectURL(blob);
+  } catch {
+    // SVG not available — keep the PNG fallback
+    img.src = fallback;
+  }
+}
