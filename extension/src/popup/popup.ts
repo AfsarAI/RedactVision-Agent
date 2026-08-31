@@ -86,27 +86,24 @@ async function saveDashboard(settings: DashboardSettings): Promise<void> {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const $ = <T extends HTMLElement>(id: string): T | null => {
-    try {
-      const el = document.getElementById(id);
-      return el as T | null;
-    } catch {
-      return null;
-    }
+  const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
+    const el = document.getElementById(id);
+    if (!el) throw new Error(`Missing element #${id}`);
+    return el as T;
   };
 
-  // Element refs - with null checks to prevent uncaught exceptions
+  // Element refs
   const activeToggle = $<HTMLInputElement>("rv-active-toggle");
   const showWidgetToggle = $<HTMLInputElement>("rv-show-widget");
   const autoRedactToggle = $<HTMLInputElement>("rv-auto-redact");
   const serverUrlInput = $<HTMLInputElement>("rv-server-url");
   const testConnBtn = $<HTMLButtonElement>("rv-test-conn");
-  const testResult = $("rv-test-result");
-  const domainChips = $("rv-domain-chips");
+  const testResult = $<HTMLElement>("rv-test-result");
+  const domainChips = $<HTMLElement>("rv-domain-chips");
   const domainForm = $<HTMLFormElement>("rv-domain-form");
   const domainInput = $<HTMLInputElement>("rv-domain-input");
   const doneBtn = $<HTMLButtonElement>("rv-done-btn");
-  const statusLabel = $("rv-status-label");
+  const statusLabel = $<HTMLElement>("rv-status-label");
   const statusDot = document.querySelector(".rv-status-dot") as HTMLElement;
   const profileForm = $<HTMLFormElement>("rv-profile-form");
   const profileNameInput = $<HTMLInputElement>("rv-profile-name");
@@ -115,26 +112,30 @@ document.addEventListener("DOMContentLoaded", async () => {
   const profileAddressInput = $<HTMLInputElement>("rv-profile-address");
   const profileCustomKeyInput = $<HTMLInputElement>("rv-profile-custom-key");
   const profileCustomValueInput = $<HTMLInputElement>("rv-profile-custom-value");
-  const profileList = $("rv-profile-list");
-  const localProfileStatus = $("rv-local-profile-status");
-  const localModelStatus = $("rv-local-model-status");
+  const profileList = $<HTMLElement>("rv-profile-list");
+  const localProfileStatus = $<HTMLElement>("rv-local-profile-status");
+  const localModelStatus = $<HTMLElement>("rv-local-model-status");
 
   async function renderLocalAIStatus(): Promise<void> {
-    localProfileStatus.textContent = "Ready";
-    localProfileStatus.className = "rv-local-ai-chip rv-ok";
+    if (localProfileStatus) {
+      localProfileStatus.textContent = "Ready";
+      localProfileStatus.className = "rv-local-ai-chip rv-ok";
+    }
 
-    try {
-      const mod = await import(/* @vite-ignore */ "@huggingface/transformers" as string);
-      if (mod && typeof mod.pipeline === "function") {
-        localModelStatus.textContent = "Installed";
-        localModelStatus.className = "rv-local-ai-chip rv-ok";
-      } else {
-        localModelStatus.textContent = "Unavailable";
+    if (localModelStatus) {
+      try {
+        const mod = await import(/* @vite-ignore */ "@huggingface/transformers" as string);
+        if (mod && typeof mod.pipeline === "function") {
+          localModelStatus.textContent = "Installed";
+          localModelStatus.className = "rv-local-ai-chip rv-ok";
+        } else {
+          localModelStatus.textContent = "Unavailable";
+          localModelStatus.className = "rv-local-ai-chip rv-warn";
+        }
+      } catch {
+        localModelStatus.textContent = "Optional";
         localModelStatus.className = "rv-local-ai-chip rv-warn";
       }
-    } catch {
-      localModelStatus.textContent = "Optional";
-      localModelStatus.className = "rv-local-ai-chip rv-warn";
     }
   }
 
