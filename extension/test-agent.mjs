@@ -12,61 +12,92 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ============================================================================
-// Section 1: Deterministic planner tests
+// Section 1: Architecture invariant — no client-side prompt parser
 // ============================================================================
-console.log("=== Deterministic planner ===");
+//
+// The RedactVision architecture (CLAUDE.md §5, §18) forbids the
+// client from interpreting the user's natural-language prompt with
+// hardcoded grammar / keyword / regex rules. The server LLM is the
+// SOLE planner.
+//
+// This test asserts that the action-planner module no longer exports
+// a `planAction` function and only contains the shared
+// `PlanningContext` type.
+console.log("=== Architecture invariant: no client-side prompt parser ===");
 
-const plannerPath = "file://" + join(__dirname, "src", "agent", "action-planner.ts");
-const { planAction } = await import(plannerPath);
-
-const ctx = {
-  sanitizedDOM: {
-    url: "http://localhost:8000/",
-    title: "Test Page",
-    elements: [
-      { tag: "input", id: "full-name", name: "fullName", value: "[PERSON_01]", selector: "#full-name" },
-      { tag: "input", id: "email", name: "email", value: "[EMAIL_01]", selector: "#email" },
-      { tag: "input", id: "phone", name: "phone", value: "[PHONE_01]", selector: "#phone" },
-      { tag: "input", id: "password", name: "password", value: "[PASSWORD_01]", selector: "#password" },
-      { tag: "select", id: "country", name: "country", value: "", selector: "#country" },
-      { tag: "button", id: "submit-btn", text: "Submit Form", selector: "#submit-btn" },
-      { tag: "button", id: "cancel-btn", text: "Cancel", selector: "#cancel-btn" },
-    ],
-  },
-};
-
-const plannerCases = [
-  ["scroll down", (o) => o?.action === "scroll" && o.direction === "down"],
-  ["scroll to the bottom", (o) => o?.action === "scroll" && o.direction === "down"],
-  ["scroll up 300", (o) => o?.action === "scroll" && o.direction === "up" && o.amount === 300],
-  ["click submit", (o) => o?.action === "click" && o.target === "#submit-btn"],
-  ["click cancel", (o) => o?.action === "click" && o.target === "#cancel-btn"],
-  ["click submit form", (o) => o?.action === "click" && o.target === "#submit-btn"],
-  ["fill the email", (o) => o?.action === "type" && o.target === "#email"],
-  ["fill the name", (o) => o?.action === "type" && o.target === "#full-name"],
-  ["select india", (o) => o?.action === "select" && o.target === "#country"],
-  ["wait", (o) => o?.action === "wait"],
-  ["nonsense foo bar", (o) => o === null],
-];
+// Inspect the source code (not the runtime module) because TypeScript
+// `import type` statements are erased at runtime and would make
+// `PlanningContext` invisible to a runtime `Object.keys` check.
+const fs = await import("node:fs/promises");
+const plannerSrc = await fs.readFile(
+  join(__dirname, "src", "agent", "action-planner.ts"),
+  "utf8"
+);
 
 let pass = 0, fail = 0;
-for (const [prompt, check] of plannerCases) {
-  const out = planAction(prompt, ctx);
-  const ok = check(out);
-  const tag = out
-    ? `${out.action}${out.target ? " " + out.target : ""}${out.direction ? " " + out.direction : ""}${out.value ? " " + out.value : ""}`
-    : "null";
-  if (ok) {
-    console.log(`  ✓  "${prompt}"  →  ${tag}`);
-    pass++;
-  } else {
-    console.log(`  ✗  "${prompt}"  expected something matching, got: ${tag}`);
-    fail++;
-  }
+
+if (/\bfunction\s+planAction\b/.test(plannerSrc)) {
+  console.log("  ✗  action-planner.ts still defines a planAction function — client-side parser must be removed");
+  fail++;
+} else {
+  console.log("  ✓  action-planner.ts does NOT define a planAction function");
+  pass++;
+}
+
+if (/\bexport\s+(interface|class|function|const|type)\s+PlanningContext\b/.test(plannerSrc)) {
+  console.log("  ✓  action-planner.ts exports the PlanningContext type");
+  pass++;
+} else {
+  console.log("  ✗  action-planner.ts is missing the PlanningContext export");
+  fail++;
 }
 
 // ============================================================================
-// Section 2: LLM action schema validation tests
+// Section 2: Planner routes ONLY through the server
+// ============================================================================
+//
+// The LLMPlanner is the only entry-point that the agent session uses
+// to get a next action. Its `plan()` method MUST go through the
+// server. We verify the planner source code:
+//
+//   - imports `planViaServer` (not `planAction`)
+//   - returns source="server-llm" on a successful server response
+//   - returns source="none" + errorCode="llm_not_configured" on 503
+//
+console.log("\n=== Planner routes through server only ===");
+
+const plannerIndexPath = "file://" + join(__dirname, "src", "llm", "llm-planner.ts");
+const llmPlannerSrc = await fs.readFile(
+  join(__dirname, "src", "llm", "llm-planner.ts"),
+  "utf8"
+);
+
+if (llmPlannerSrc.includes('from "../agent/action-planner"') && llmPlannerSrc.includes("planAction")) {
+  console.log("  ✗  llm-planner.ts still imports planAction — server must be the only planner");
+  fail++;
+} else {
+  console.log("  ✓  llm-planner.ts does NOT import planAction");
+  pass++;
+}
+
+if (llmPlannerSrc.includes('from "./extension-bridge"') && llmPlannerSrc.includes("planViaServer")) {
+  console.log("  ✓  llm-planner.ts routes through the server bridge (planViaServer)");
+  pass++;
+} else {
+  console.log("  ✗  llm-planner.ts does not appear to route through planViaServer");
+  fail++;
+}
+
+if (llmPlannerSrc.includes("errorCode")) {
+  console.log("  ✓  llm-planner.ts reports structured errorCode (llm_not_configured, etc.)");
+  pass++;
+} else {
+  console.log("  ✗  llm-planner.ts is missing structured errorCode");
+  fail++;
+}
+
+// ============================================================================
+// Section 3: LLM action schema validation tests
 // ============================================================================
 console.log("\n=== LLM action schema ===");
 

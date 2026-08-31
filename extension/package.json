@@ -7,9 +7,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "typecheck": "tsc --noEmit",
     "build": "npm run typecheck && npm run build:content && npm run build:background && npm run build:popup && npm run copy:assets",
-    "build:content": "esbuild src/content/content.ts --bundle --format=iife --outfile=dist/content/content.js --external:@huggingface/transformers",
+    "build:content": "esbuild src/content/content.ts --bundle --format=iife --outfile=dist/content/content.js --external:@huggingface/transformers --external:tesseract.js",
     "build:background": "esbuild src/background/service-worker.ts --bundle --format=esm --outfile=dist/background/service-worker.js",
-    "build:popup": "esbuild src/popup/popup.ts --bundle --format=iife --outfile=dist/popup/popup.js --external:@huggingface/transformers",
+    "build:popup": "esbuild src/popup/popup.ts --bundle --format=iife --outfile=dist/popup/popup.js --external:@huggingface/transformers --external:tesseract.js",
     "copy:assets": "mkdir -p dist/popup dist/ui && cp src/popup/popup.html dist/popup/ && cp src/popup/popup.css dist/popup/ && cp src/ui/chat-ui.css dist/popup/ && cp src/ui/chat-ui.css dist/ui/"
   },
   "keywords": [],
@@ -21,6 +21,7 @@
     "typescript": "^7.0.2"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "^3.0.0"
+    "@huggingface/transformers": "^3.0.0",
+    "tesseract.js": "^5.0.0"
   }
 }

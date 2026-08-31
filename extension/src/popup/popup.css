@@ -510,3 +510,79 @@ body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
 }
+
+/* ============================================================
+ *   LIGHT THEME (Appearance → Light / Auto)
+ * ============================================================ */
+body.rv-light {
+  --rv-bg: #eef2fb;
+  --rv-surface: #f7f9ff;
+  --rv-surface-2: #ffffff;
+  --rv-border: rgba(91, 107, 255, 0.22);
+  --rv-border-strong: rgba(91, 107, 255, 0.45);
+  --rv-text: #1e2438;
+  --rv-text-dim: #5a6478;
+  --rv-text-mute: #8b93a7;
+  --rv-accent-soft: rgba(91, 107, 255, 0.12);
+}
+
+body.rv-light .rv-dash {
+  background:
+    radial-gradient(800px 300px at 100% 0%, rgba(91, 107, 255, 0.08), transparent 60%),
+    radial-gradient(600px 400px at 0% 100%, rgba(34, 211, 160, 0.07), transparent 60%),
+    var(--rv-bg);
+}
+
+body.rv-light .rv-row,
+body.rv-light .rv-pill,
+body.rv-light .rv-field input,
+body.rv-light .rv-chip-form input,
+body.rv-light .rv-dash-footer {
+  background: rgba(255, 255, 255, 0.75);
+}
+
+body.rv-light .rv-field-hint code,
+body.rv-light .rv-test-result code {
+  background: rgba(91, 107, 255, 0.10);
+  color: #3d4fd8;
+}
+
+body.rv-light .rv-section-label {
+  color: #4353d8;
+}
+
+body.rv-light .rv-chip {
+  background: var(--rv-accent-soft);
+  color: #3d4fd8;
+}
+
+body.rv-light .rv-chip-remove {
+  color: #3d4fd8;
+}
+
+body.rv-light .rv-empty code {
+  background: var(--rv-accent-soft);
+  color: #3d4fd8;
+}
+
+body.rv-light .rv-btn-ghost {
+  background: rgba(91, 107, 255, 0.10);
+  color: #3d4fd8;
+}
+
+body.rv-light .rv-switch-track {
+  background: rgba(91, 107, 255, 0.15);
+}
+
+body.rv-light .rv-switch-thumb {
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(30, 41, 80, 0.35);
+}
+
+body.rv-light .rv-test-result {
+  color: var(--rv-text-dim);
+}
+
+body.rv-light .rv-dash {
+  border-color: rgba(91, 107, 255, 0.20);
+}

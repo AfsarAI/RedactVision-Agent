@@ -1,3 +1,157 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+---
+
+## Development Commands
+
+### Extension (Chrome MV3)
+
+```bash
+cd extension
+npm install              # esbuild, typescript, @types/chrome
+npm run build            # typecheck + bundle content/background/popup → dist/
+npm run typecheck        # tsc --noEmit (fast, no emit)
+```
+
+Build outputs to `extension/dist/` (content/content.js, background/service-worker.js, popup/popup.js, ui/chat-ui.css). Load unpacked in Chrome (`chrome://extensions`) from `extension/`.
+
+#### Source of truth vs. build output — DO NOT hand-edit `dist/`
+
+- **`extension/src/`** is the **source of truth** and is tracked by git.
+- **`extension/dist/`** is **build output** and is **gitignored** (`.gitignore` → `extension/dist/`). It is **never committed / pushed to GitHub**.
+- `npm run build` regenerates `dist/` entirely from `src/` (typecheck → esbuild → `copy:assets` copies `src/ui/chat-ui.css` → `dist/ui/` and `dist/popup/`).
+
+**Rules (MANDATORY):**
+1. Always edit **`src/`** files (TS, CSS, HTML), never `dist/` directly. Any hand-edit to `dist/` is wiped on the next build and is invisible to teammates.
+2. After changing any `src/` file, run `cd extension && npm run build` so the change lands in `dist/` and the running extension actually picks it up.
+3. Because `dist/` is gitignored, a teammate who clones the repo **must run `npm install && npm run build`** locally to get a working `dist/` before loading the extension.
+4. Verify you are editing tracked source with `git ls-files extension/` — a path that isn't listed is generated output, not source.
+
+### Server (FastAPI + multi-provider LLM)
+
+```bash
+cd server
+pip install -e ".[dev]"   # runtime + pytest/httpx
+
+start-server              # uvicorn 127.0.0.1:8001 with reload (pyproject.toml script)
+# or: python -m redactvision_server.main
+
+python -m pytest tests/ -v             # full suite
+python tests/test_llm_planner.py      # single file (standalone script, no pytest needed)
+```
+
+### Combined run (test site + server + extension)
+
+```bash
+# Terminal 1 — controlled test page
+cd test-site && python3 -m http.server 8000
+
+# Terminal 2 — server LLM planner
+cd server && start-server
+
+# Terminal 3 — optional local router (OmniRoute)
+# npm i -g omniroute && omniroute   # http://localhost:20128
+
+# Chrome → load unpacked extension → http://localhost:8000/ → click RV pill
+```
+
+### LLM provider setup (bounded chain, no infinite retry)
+
+Priority: **Groq** → **OpenRouter** (free-only) → **OmniRoute** (localhost:20128, default). Keys in `.env` (copy `.env.example`); never commit `.env`. `.env` is loaded automatically by `main.py` (looked up from project root). The extension never holds server API keys.
+
+---
+
+## Architecture Overview
+
+### Extension source tree (key files, not exhaustive)
+
+```
+extension/src/
+  content/content.ts          — content script: in-page chat panel + launcher pill
+  content/dom-extractor.ts   — DOM → structured elements (local only)
+  privacy/
+    privacy-firewall.ts       — detects + tokenizes PII; owns local token map
+    pii-detector.ts          — Layer 1 DOM rules → Layer 2 regex/heuristics
+  agent/
+    agent-session.ts          — multi-iteration loop (perceive → plan → validate → exec)
+    llm/llm-planner.ts       — server-LLM-only planner; no client fallback rules
+  executor/
+    action-executor.ts        — validate + execute click/type/scroll/select/wait
+  perception/                 # OCR / NER / CV engines + screenshot capture
+    screenshot-capture.ts    — viewport screenshot capture
+    ocr-engine.ts            — Tesseract.js local OCR (NOT wired to default pipeline)
+    ner-engine.ts            — Transformers.js NER (NOT wired)
+    cv-engine.ts             — Transformers.js vision (face/doc/card detection, graceful degradation)
+    perception-pipeline.ts   — Fusion orchestrator (DOM + OCR + NER + CV in parallel; NOT active by default)
+    sensitive-data-map.ts    — Unified SensitiveDataMap schema (NOT populated in default flow)
+  ui/chat-ui.ts              — floating 380×580 card; styles from extension bundle
+  background/service-worker.ts
+```
+
+### Current perception pipeline status (critical gap — must fix before claiming visual redaction)
+
+The **default content-script flow** (`content.ts` lines 39–49) runs only:
+```
+extractPageDOM() → PrivacyFirewall.sanitizePage() → sanitizedPageDOM → send to server
+```
+
+The following modules **exist in source but are NOT called** by the default pipeline:
+
+| Module | File | Status | Notes |
+|---|---|---|---|
+| Screenshot capture | `perception/screenshot-capture.ts` | Exists | Not invoked by default |
+| OCR | `perception/ocr-engine.ts` | Exists, not wired | Tesseract.js; detects text in images |
+| NER | `perception/ner-engine.ts` | Exists, not wired | Transformers.js; entity recognition |
+| CV / Vision | `perception/cv-engine.ts` | Exists, not wired | Face/doc/card detection |
+| Evidence fusion | `perception/perception-pipeline.ts` | Exists, not wired | Combines DOM + OCR + NER + CV |
+| Sensitive data map | `perception/sensitive-data-map.ts` | Schema exists, not populated | Fusion output format |
+| Visual redaction | `perception/visual-redaction-engine.ts` | Module exists, not integrated | Blur/mask sensitive image regions |
+
+**Gap consequence:** Sensitive data rendered only in images/canvas/visual elements (faces, cards, document screenshots, hidden rendered text) is NOT detected or redacted before network transmission. Such PII could leak to the server.
+
+**Architecture target (from your architecture prompt §3–§11):** DOM + CV + OCR + NER → Evidence Fusion → Sensitive Data Map → Local Redaction (DOM + visual) → Sanitized Context → Server.
+
+**Until the perception pipeline is wired into `content.ts`**, all documentation must label visual redaction as partial/experimental, and the privacy invariant "raw sensitive data must not cross the network boundary" is NOT enforced for visual content.
+
+**Next step to close the gap:** Integrate `perception-pipeline.ts` into `content.ts` so that before any server call, the pipeline captures the screenshot, runs OCR/CV/NER, fuses evidence, and applies visual redaction (DOM masking + blur) to produce a fully sanitized payload.
+
+### Privacy token flow (DOM-only — visual redaction not yet wired)
+
+`extractPageDOM()` → `PrivacyFirewall.sanitizePage()` replaces sensitive values in DOM text with semantic tokens (`[PERSON_01]`, `[EMAIL_01]`, etc.). **Only `sanitizedPageDOM` crosses the network for DOM text.** `PrivacyFirewall.getLocalTokenMap()` produces `{token → original}` and stays in browser memory — never in server payload, never in extension messages to server, never logged.
+
+**Limitation:** This covers DOM text only. If sensitive data is rendered in images, canvas, or other visual elements, it is NOT currently detected or redacted before transmission. The perception pipeline modules (OCR, CV, NER) exist but are not wired into the default flow. See "Current perception pipeline status" above.
+
+When server returns a `type` action needing a token: `ActionExecutor` → `resolveToken()` locally → type original value locally.
+
+### Server source tree
+
+```
+server/redactvision_server/
+  main.py              — FastAPI app; /llm/plan, /ws/agent, /health, /privacy-status
+  llm.py               — JSON parser + action-shape validation + prompt assembly
+  planner_prompt.py    — SYSTEM_PROMPT + build_user_prompt()
+  multi_provider_llm.py — Sequential chain (Groq → OpenRouter → OmniRoute)
+  providers.py         — Provider interface + implementations (blacklist model on 404/410)
+  types.py             — SanitizedEvent, PlanRequest, PlanResponse, ServerAction
+  mock_agent.py        — rule-based planner for test page only (not used in prod)
+```
+
+### Server LLM call path
+
+`POST /llm/plan` receives `PlanRequest` → `validate_action_request()` (privacy re-check) → `plan_with_llm()` → `MultiProviderLLM.generate()` tries providers in order with at most 1 retry per provider (max 6 HTTP calls total, bounded by design). On all-providers-exhausted raises `RuntimeError`; server returns 502 with `llm_unavailable`. When no provider key is set returns **503 `llm_not_configured`** — never invents a hardcoded action silently.
+
+### In-page chat panel
+
+Content script injects a fixed launcher pill (bottom-right). Click opens a floating card (`buildChatUI()`) rendered directly into page DOM (not iframe). Draggable/minimizable/closeable; drag offset persisted per-hostname via `chrome.storage.local`. Owns an `AgentSession` that survives across prompts. Communicates with server via `planViaServer()` (HTTP POST to `/llm/plan`); WebSocket `/ws/agent` is for agent session messaging. CSS loaded from extension bundle at runtime (`chrome.runtime.getURL`); inline fallback for `file://`.
+
+### Action contract
+
+Server produces strict JSON (validated against `extension/src/llm/action-schema.ts`): `{action, target, value?, confidence, reasoning?, done?}`. Client validates schema, target existence, visibility/interactability, confidence threshold, domain/policy, risk level. High-risk actions (payment, deletion, external send) require explicit user confirmation per local policy.
+
+---
+
 # RedactVision Agent — Claude Code Project Instructions
 
 ## 1. Project Identity

@@ -1,33 +1,34 @@
 /**
- * RedactVision Agent — Planner Orchestrator (single flow with explicit override)
+ * RedactVision Agent — Planner Orchestrator (server-LLM only)
  *
- * Per architecture (docs/ARCHITECTURE.md, CLAUDE.md §5):
- *   - The server LLM is the SOLE planner.
- *   - The on-device model is a perception/sanitization helper inside the
- *     Privacy Firewall (extension/src/privacy). It is NEVER a planner.
- *   - The local deterministic planner (action-planner.ts) is the
- *     automatic, implicit fallback when the server is unreachable.
+ * ARCHITECTURE (CLAUDE.md §5, §18):
+ *   - The SERVER-SIDE LLM is the SOLE planner.
+ *   - The client NEVER interprets natural-language prompts via
+ *     hardcoded grammar, regex, keyword matching, or "fallback
+ *     rules". All natural-language understanding belongs to the
+ *     server's LLM.
+ *   - The on-device model is a perception/sanitization helper inside
+ *     the Privacy Firewall. It is NOT a planner.
  *
  * Routing is controlled by `PlannerConfig.backend`:
- *   - "auto"       (default) — try server (5 s timeout) → fall back to local rules.
- *   - "server"     — try server only. Surface error if it fails. No fallback.
- *   - "local"      — use local rules only. Skip the server entirely.
- *   - "on-device"  — not implemented as a planner yet. Falls back to "auto"
- *                    with a console.warn so the user sees a soft notice.
+ *   - "server"     (default) — call the server's /llm/plan endpoint.
+ *     This is the only supported planner. The client never makes
+ *     action decisions locally.
+ *   - "auto"/"local"/"on-device" — kept as accepted values for
+ *     backward-compat with stored popup config; all map to "server"
+ *     because there is no other planner in the architecture.
  *
  * The user configures:
  *   - serverUrl      (where to POST)
  *   - onDeviceModel  (model id for the privacy firewall's visual PII
  *                     detector; not used by this orchestrator)
- *   - backend        (routing override, default "auto")
+ *   - backend        (routing override; mapped to "server" below)
  *
  * NOTE: The extension never holds the server's API key. The server
  * reads provider keys (Gemini, Groq, etc.) from its own .env and uses
- * them on the user's behalf. This module therefore has no
- * `serverApiKey` field.
+ * them on the user's behalf.
  */
 
-import { planAction, PlanningContext } from "../agent/action-planner";
 import type { PlannedAction } from "../executor/action-executor";
 import {
   LLMPlannedAction,
@@ -35,7 +36,7 @@ import {
   ActionHistoryEntry,
   toExecutorAction,
 } from "./action-schema";
-import { planViaServer, isInExtensionContext } from "./extension-bridge";
+import { planViaServer } from "./extension-bridge";
 
 /** Routing override chosen in the popup's segmented control. */
 export type PlannerBackend = "auto" | "server" | "on-device" | "local";
@@ -49,12 +50,21 @@ export interface PlannerConfig {
    */
   onDeviceModel?: string;
   /**
-   * Routing override. Default "auto" (server → fallback to local).
-   * See module header for the full matrix.
+   * Routing override. The ONLY supported planner is the server LLM.
+   * "auto" / "local" / "on-device" are accepted for backward-compat
+   * with stored popup config and are mapped to "server" internally.
    */
   backend?: PlannerBackend;
 }
 
+/**
+ * Source of the action. The architecture is server-LLM-only, so the
+ * only "happy" source is "server-llm". "none" is used when the
+ * server is unreachable or the LLM is not configured.
+ *
+ * The historical "fallback-rules" value is kept ONLY so that stored
+ * UI labels and analytics don't break; it is no longer produced.
+ */
 export type PlannerSource = "server-llm" | "fallback-rules" | "none";
 
 export interface PlannerResult {
@@ -67,10 +77,20 @@ export interface PlannerResult {
   backendLabel?: string;
   /** Diagnostic message for the UI. */
   message?: string;
+  /**
+   * A short error code (e.g. "llm_not_configured", "llm_unavailable",
+   * "server_unreachable") for the UI to switch into a specific state.
+   * Only present when source === "none".
+   */
+  errorCode?: string;
 }
 
-/** Hard ceiling for any single server call. Matches the service worker. */
-const SERVER_TIMEOUT_MS = 5_000;
+/**
+ * Hard ceiling for any single server call. Matches the service
+ * worker. The server's `/llm/plan` may walk a multi-provider
+ * fallback chain before returning, so we wait up to 120 s.
+ */
+const SERVER_TIMEOUT_MS = 120_000;
 
 export class LLMPlanner {
   private config: PlannerConfig;
@@ -88,17 +108,13 @@ export class LLMPlanner {
   }
 
   /**
-   * Plan the next action.
+   * Plan the next action by delegating to the server LLM.
    *
-   * Default ("auto"):
-   *   1. Try the server LLM (5 s timeout).
-   *   2. On any failure → fall back to the local deterministic planner.
-   *   3. If local planner also returns null → source = "none".
-   *
-   * Explicit overrides:
-   *   - "server"    — step 1 only; failure short-circuits to "none".
-   *   - "local"     — step 2 only; the server is never contacted.
-   *   - "on-device" — currently equivalent to "auto" (placeholder).
+   * The client does NOT contain any fallback planner. When the server
+   * is unreachable or the LLM is not configured, this method returns
+   * `source: "none"` with an explanatory message and an `errorCode`
+   * so the UI can show a clear "Agent offline" state instead of
+   * silently inventing a hardcoded action.
    */
   async plan(
     ctx: PlanningContext,
@@ -110,83 +126,31 @@ export class LLMPlanner {
       sanitizedDOM: ctx.sanitizedDOM,
       history,
     };
-    const backend: PlannerBackend = this.config.backend || "auto";
+    // The ONLY supported planner is the server LLM. Any legacy
+    // routing value collapses to "server" here.
+    void ctx;
 
-    // ON-DEVICE is a stub — log a soft notice and fall through to AUTO.
-    if (backend === "on-device") {
-      console.warn(
-        "[LLMPlanner] backend='on-device' is not yet implemented as a planner. " +
-          "Falling back to auto (server → local rules)."
-      );
-    }
-    const effective: "auto" | "server" | "local" =
-      backend === "on-device" ? "auto" : backend;
-
-    // 1. Try server LLM via the extension bridge (unless "local")
-    if (effective !== "local") {
-      const serverResult = await this.tryServer(input);
-      if (serverResult.action) {
-        return {
-          action: toExecutorAction(serverResult.action),
-          source: "server-llm",
-          llmAction: serverResult.action,
-          backendLabel: serverResult.provider || "Server",
-        };
-      }
-      // Server failed AND user forced "server" — surface the error, no fallback.
-      if (effective === "server") {
-        return {
-          action: null,
-          source: "none",
-          message: serverResult.error || "Server unreachable",
-          backendLabel: "Server (offline)",
-        };
-      }
-      // AUTO path — fall through to local rules.
-      const localResult = this.runLocal(input, ctx, serverResult.error);
-      if (localResult) return localResult;
+    const serverResult = await this.tryServer(input);
+    if (serverResult.action) {
       return {
-        action: null,
-        source: "none",
-        message: serverResult.error || "No planner could interpret the task",
+        action: toExecutorAction(serverResult.action),
+        source: "server-llm",
+        llmAction: serverResult.action,
+        backendLabel: serverResult.provider || "Server",
       };
     }
-
-    // 2. Pure LOCAL path
-    const localResult = this.runLocal(input, ctx);
-    if (localResult) return localResult;
     return {
       action: null,
       source: "none",
-      message: "Local rules could not interpret the task",
+      message: serverResult.error || "Server did not return a valid action",
+      backendLabel: serverResult.provider || "Server (offline)",
+      errorCode: serverResult.errorCode,
     };
-  }
-
-  private runLocal(
-    input: LLMPlannerInput,
-    ctx: PlanningContext,
-    serverError?: string
-  ): PlannerResult | null {
-    try {
-      const a = planAction(input.userPrompt, ctx);
-      if (a) {
-        return {
-          action: a,
-          source: "fallback-rules",
-          backendLabel: "Local rules",
-          message: serverError || "Server unavailable, used local rules",
-        };
-      }
-      return null;
-    } catch (e) {
-      console.warn("[LLMPlanner] Local rules planner failed:", e);
-      return null;
-    }
   }
 
   /**
    * Call the server LLM via the extension bridge.
-   * Returns { action, provider, error }. Never throws.
+   * Returns { action, provider, error, errorCode }. Never throws.
    */
   private async tryServer(
     input: LLMPlannerInput
@@ -194,17 +158,24 @@ export class LLMPlanner {
     action: LLMPlannedAction | null;
     provider?: string;
     error?: string;
+    errorCode?: string;
   }> {
     const serverUrl = this.config.serverUrl || DEFAULT_PLANNER_CONFIG.serverUrl!;
 
-    // Hard 5 s safety in case the bridge call hangs (it has its own
-    // timeout but we belt-and-suspender it here).
+    // Trim the sanitized DOM to keep the request small enough that
+    // even providers with strict body limits (e.g. Groq's 413 cap)
+    // will accept it. We keep at most MAX_ELEMENTS elements and
+    // strip noisy fields like long CSS classes.
+    const trimmedElements = trimElements(
+      input.sanitizedDOM.elements as unknown as Array<Record<string, unknown>>
+    );
+
     const bridgePromise = planViaServer({
       serverUrl,
       sanitizedDOM: {
         url: input.sanitizedDOM.url,
         title: input.sanitizedDOM.title,
-        elements: input.sanitizedDOM.elements as unknown as Array<Record<string, unknown>>,
+        elements: trimmedElements,
       },
       userPrompt: input.userPrompt,
       history: (input.history as unknown as Array<Record<string, unknown>>) || [],
@@ -218,13 +189,13 @@ export class LLMPlanner {
       );
     });
 
-    let result;
+    let result: Awaited<typeof bridgePromise>;
     try {
       result = await Promise.race([bridgePromise, timeout]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (timer) clearTimeout(timer);
-      return { action: null, error: msg };
+      return { action: null, error: msg, errorCode: "server_unreachable" };
     }
     if (timer) clearTimeout(timer);
 
@@ -232,10 +203,23 @@ export class LLMPlanner {
       return {
         action: null,
         error: result.error || `Server HTTP ${result.status}`,
+        errorCode: classifyHttpError(result.status),
       };
     }
 
-    if (result.body.source === "fallback-mock" || result.body.source === "server-llm") {
+    // Server returned an error JSON (e.g. llm_not_configured / llm_unavailable).
+    if (result.body.source === "error") {
+      return {
+        action: null,
+        error:
+          (result.body as unknown as { message?: string }).message ||
+          "Server reported an error",
+        errorCode:
+          (result.body as unknown as { code?: string }).code || "server_error",
+      };
+    }
+
+    if (result.body.source === "server-llm") {
       const { validateLLMAction } = await import("./action-schema");
       const v = validateLLMAction(result.body.action);
       if (v.ok) {
@@ -244,11 +228,77 @@ export class LLMPlanner {
           provider: result.body.provider || undefined,
         };
       }
-      return { action: null, error: `Server returned invalid action: ${v.reason}` };
+      return {
+        action: null,
+        error: `Server returned invalid action: ${v.reason}`,
+        errorCode: "invalid_action",
+      };
     }
 
-    return { action: null, error: `Server returned unknown source: ${result.body.source}` };
+    return {
+      action: null,
+      error: `Server returned unknown source: ${result.body.source}`,
+      errorCode: "server_error",
+    };
   }
+}
+
+function classifyHttpError(status: number): string {
+  if (status === 503) return "llm_not_configured";
+  if (status === 502) return "llm_unavailable";
+  if (status === 0) return "server_unreachable";
+  return "server_error";
+}
+
+/**
+ * Trim a sanitized DOM before sending it to the server LLM.
+ *
+ * Some real-world pages (and even the local test page) include
+ * hundreds of `a`, `img`, `[role]`, `[aria-label]` elements which
+ * blow past providers' body-size limits (Groq returns 413 above
+ * ~1 MB). We keep only the elements that the agent can actually
+ * act on, drop noisy fields, and cap the total at MAX_ELEMENTS.
+ */
+const MAX_ELEMENTS = 50;
+const MAX_TEXT_CHARS = 80;
+
+const ACTIVE_TAGS = new Set([
+  "input",
+  "textarea",
+  "select",
+  "button",
+  "form",
+  "a",
+]);
+
+function trimElements(
+  elements: Array<Record<string, unknown>>
+): Array<Record<string, unknown>> {
+  if (!Array.isArray(elements)) return [];
+
+  const out: Array<Record<string, unknown>> = [];
+  for (const el of elements) {
+    const tag = String(el.tag || "").toLowerCase();
+    const hasRole = typeof el.role === "string" && el.role.length > 0;
+    const hasAria = typeof el.ariaLabel === "string" && el.ariaLabel.length > 0;
+    if (!ACTIVE_TAGS.has(tag) && !hasRole && !hasAria) continue;
+
+    const clean: Record<string, unknown> = { tag };
+    if (typeof el.id === "string" && el.id) clean.id = el.id;
+    if (typeof el.type === "string" && el.type) clean.type = el.type;
+    if (typeof el.name === "string" && el.name) clean.name = el.name;
+    if (typeof el.placeholder === "string" && el.placeholder) clean.placeholder = el.placeholder;
+    if (typeof el.ariaLabel === "string" && el.ariaLabel) clean.ariaLabel = el.ariaLabel;
+    if (typeof el.value === "string") clean.value = el.value;
+    if (typeof el.text === "string") {
+      clean.text = el.text.length > MAX_TEXT_CHARS ? el.text.slice(0, MAX_TEXT_CHARS) : el.text;
+    }
+    if (typeof el.selector === "string" && el.selector) clean.selector = el.selector;
+
+    out.push(clean);
+    if (out.length >= MAX_ELEMENTS) break;
+  }
+  return out;
 }
 
 // ----- Default config persistence (chrome.storage.local) -----
@@ -258,15 +308,13 @@ const STORAGE_KEY = "rv_agent_config";
 export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
   serverUrl: "http://127.0.0.1:8001",
   onDeviceModel: "onnx-community/Qwen2.5-1.5B-Instruct",
-  backend: "auto",
+  backend: "server",
 };
 
 export async function loadPlannerConfig(): Promise<PlannerConfig> {
   try {
     const stored = await chrome.storage.local.get(STORAGE_KEY);
     if (stored && stored[STORAGE_KEY]) {
-      // Merge: defaults first, then stored. Unknown stored fields are
-      // dropped silently (forward-compat for users with old configs).
       const merged: PlannerConfig = { ...DEFAULT_PLANNER_CONFIG };
       const s = stored[STORAGE_KEY] as Record<string, unknown>;
       if (typeof s.serverUrl === "string") merged.serverUrl = s.serverUrl;
@@ -277,10 +325,12 @@ export async function loadPlannerConfig(): Promise<PlannerConfig> {
         s.backend === "on-device" ||
         s.backend === "local"
       ) {
-        merged.backend = s.backend;
+        // Any legacy value is accepted and treated as "server" — the
+        // only supported planner. We keep the user's value in the
+        // stored config for backward-compat, but force "server"
+        // internally at runtime.
+        merged.backend = "server";
       }
-      // Intentionally do NOT restore `serverApiKey` — the extension
-      // never holds provider API keys.
       return merged;
     }
   } catch {
@@ -291,11 +341,11 @@ export async function loadPlannerConfig(): Promise<PlannerConfig> {
 
 export async function savePlannerConfig(config: PlannerConfig): Promise<void> {
   try {
-    // Persist ONLY the new shape. No API key, no legacy fields.
+    // Always persist as "server" — no other planner exists.
     const clean: PlannerConfig = {
       serverUrl: config.serverUrl,
       onDeviceModel: config.onDeviceModel,
-      backend: config.backend,
+      backend: "server",
     };
     await chrome.storage.local.set({ [STORAGE_KEY]: clean });
   } catch {
@@ -304,4 +354,7 @@ export async function savePlannerConfig(config: PlannerConfig): Promise<void> {
 }
 
 // Re-export for callers that want to know whether they're in an extension.
-export { isInExtensionContext };
+export { isInExtensionContext } from "./extension-bridge";
+
+// Re-imported to satisfy the PlannerContext type alias used above.
+import type { PlanningContext } from "../agent/action-planner";

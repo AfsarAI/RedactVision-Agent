@@ -1,7 +1,7 @@
 """
 RedactVision Agent — Server-side LLM Planner
 
-Phase 7 / Phase 9+: Multi-Provider Fallback & Retry Loop.
+Bounded multi-provider fallback. NO infinite retry loop.
 
 All API keys are read from environment variables. None are hard-coded.
 See .env.example for required variables.
@@ -12,15 +12,23 @@ Privacy contract (CLAUDE.md invariants):
   - It returns a structured action; the client validates and executes.
 
 Priority chain (see multi_provider_llm.py):
-  1. Gemini  →  2. Groq  →  3. OpenRouter  →  4. NVIDIA NIM
-  →  5. OmniRoute  →  6. Hugging Face
+  1. Groq        (primary; fast, structured JSON)
+  2. OpenRouter  (secondary; free models only)
+  3. OmniRoute   (tertiary fallback)
 
-On any failure (429 / 500 / 503 / timeout / unavailable) the loop
-automatically backs off and tries the next provider. The loop is
-infinite — it only exits with a successful response or after 200
-internal attempts (configurable via LLM_MAX_ATTEMPTS).
+Removed providers (after live testing showed they were not viable
+for this agent workload): Google AI Studio (Gemini), NVIDIA NIM,
+Hugging Face Inference API.
 
-Existing exports preserved (backward-compatible):
+On failure:
+  - Within a single provider, retry ONCE on a retryable error
+    (rate limit, timeout, 5xx).
+  - On a non-retryable error (401, 404, 410, invalid request), move
+    to the next provider immediately.
+  - After all 3 providers have been tried, raise RuntimeError — the
+    orchestrator will never loop back to provider 1.
+
+Exports:
   plan_with_llm()   — main entry for the /llm/plan endpoint
   health()          — /llm/health status dict
   is_configured()   — True if at least one provider has a key
@@ -47,6 +55,16 @@ logger = logging.getLogger("redactvision_server.llm")
 # ----- Module-level singleton (lazy) -----
 _llm: Optional[MultiProviderLLM] = None
 
+# ----- Provider reliability counters (C6) -----
+# Simple in-process counters so we can see which provider produces
+# clean JSON vs parse failures. Surfaced via /llm/health.
+_parse_stats: dict[str, dict[str, int]] = {}
+
+
+def _record_parse(provider: str, ok: bool) -> None:
+    stats = _parse_stats.setdefault(provider, {"success": 0, "parse_failure": 0})
+    stats["success" if ok else "parse_failure"] += 1
+
 
 def _get_llm() -> MultiProviderLLM:
     global _llm
@@ -61,7 +79,7 @@ def _read_env_or_default(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 
-DEFAULT_MODEL = "llama-3.1-8b-instant"
+DEFAULT_MODEL = "groq/compound-mini"
 MAX_TOKENS = 400
 TEMPERATURE = 0.1
 REQUEST_TIMEOUT = 30.0
@@ -73,7 +91,7 @@ def _available_providers() -> list[dict]:
     """Return a list of provider status dicts for the /llm/health endpoint."""
     from .providers import PROVIDERS
     return [
-        {"name": p.name, "available": p.available()}
+        {"name": p.name, "available": p.available(), "models": p.models()}
         for p in PROVIDERS
     ]
 
@@ -87,29 +105,18 @@ def is_configured() -> bool:
 
 
 def health() -> dict:
-    """Return a status dict for /llm/health.
-
-    Backward-compatible: includes the legacy `model` and `api_url` keys
-    (used by the original test suite) plus the new multi-provider info.
-    """
+    """Return a status dict for /llm/health."""
     configured = is_configured()
-    # Primary provider info — new multi-provider module, but kept legacy keys.
-    primary_model = os.environ.get("LLM_MODEL") or os.environ.get("GROQ_MODEL", DEFAULT_MODEL)
-    primary_url = os.environ.get("LLM_API_URL") or os.environ.get(
-        "GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions"
-    )
+    primary_model = os.environ.get("GROQ_MODEL") or DEFAULT_MODEL
     return {
-        # Legacy keys (kept for backward-compat with existing tests/clients)
         "configured": configured,
         "model": primary_model,
-        "api_url": primary_url,
-        # New multi-provider keys
-        "primary_model": primary_model,
-        "primary_api_url": primary_url,
+        "api_url": "https://api.groq.com/openai/v1/chat/completions",
         "providers": _available_providers(),
-        "backoff_seconds": float(os.environ.get("LLM_BACKOFF_SECONDS", "5.0")),
         "timeout_seconds": float(os.environ.get("LLM_TIMEOUT_SECONDS", "30.0")),
-        "max_attempts": int(os.environ.get("LLM_MAX_ATTEMPTS", "200")),
+        "retries_per_provider": int(os.environ.get("LLM_RETRIES_PER_PROVIDER", "1")),
+        "total_budget_seconds": float(os.environ.get("LLM_TOTAL_BUDGET_SECONDS", "100")),
+        "parse_stats": _parse_stats,
     }
 
 
@@ -121,24 +128,22 @@ def plan_with_llm(
     Call the multi-provider LLM and return the parsed action dict plus
     the display label of the provider that actually answered.
 
-    The priority chain is handled by MultiProviderLLM.generate().
-    This function only:
-      1. Builds the messages from the sanitized event.
-      2. Calls the orchestrator (which loops until a provider succeeds).
-      3. Parses and validates the JSON response.
+    The priority chain is handled by MultiProviderLLM.generate(). It is
+    bounded — at most 3 providers × 2 attempts = 6 HTTP calls per request,
+    with a per-call timeout (LLM_TIMEOUT_SECONDS, default 30s). There
+    is no infinite retry loop.
 
     Returns:
-        (action_dict, provider_label) — e.g. ({"action":"click",...}, "Groq").
+        (action_dict, provider_label) — e.g. ({"action":"click",...}, "groq").
 
     Raises:
-        RuntimeError  — no provider succeeded after max attempts (or never configured).
+        RuntimeError  — every provider failed (caller converts to 502).
         ValueError    — the response could not be parsed as valid JSON.
     """
     if not is_configured():
         raise RuntimeError(
             "No LLM provider is configured. Set at least one of: "
-            "GOOGLE_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, "
-            "NVAPI_KEY / NVIDIA_API_KEY, OMNIROUTE_API_KEY, HF_API_KEY. "
+            "GROQ_API_KEY, OPENROUTER_API_KEY, OMNIROUTE_API_KEY. "
             "See .env.example."
         )
 
@@ -153,23 +158,98 @@ def plan_with_llm(
         {"role": "user", "content": build_user_prompt(sanitized_event.prompt or "", sanitized_dom, history)},
     ]
 
-    logger.info("LLM request → multi-provider chain (Gemini→Groq→OpenRouter→Nvidia→OmniRoute→HF)")
-    llm = _get_llm()
-    raw_text, provider_name = llm.generate(messages)
-    logger.info("LLM response ← provider=%s (%.50s...)", provider_name, raw_text[:50])
+    logger.info("LLM request → Groq → OpenRouter → OmniRoute (bounded)")
 
-    action = _parse_json(raw_text)
-    logger.info("LLM action parsed: %s (provider=%s)", action, provider_name)
-    return action, provider_name
+    llm = _get_llm()
+
+    # Some free models (notably via the openrouter/free router) sometimes
+    # answer with a moderation notice or chain-of-thought prose instead
+    # of JSON ("User Safety: safe", "Here's a thinking process: ...").
+    # Retry ONCE with an explicit "JSON only" instruction before giving
+    # up, so a transient bad reply doesn't surface as a 502 "offline".
+    last_error: Exception | None = None
+    for attempt in range(2):
+        raw_text, provider_name = llm.generate(messages)
+        logger.info(
+            "LLM response ← provider=%s attempt=%d (%.50s...)",
+            provider_name, attempt + 1, raw_text[:50],
+        )
+        try:
+            action = _parse_json(raw_text)
+            _record_parse(provider_name, True)
+            logger.info("LLM action parsed: %s (provider=%s)", action, provider_name)
+            return action, provider_name
+        except ValueError as exc:
+            _record_parse(provider_name, False)
+            last_error = exc
+            logger.warning(
+                "LLM output was not JSON (attempt %d): %.120s",
+                attempt + 1, raw_text,
+            )
+            messages = messages + [
+                {"role": "assistant", "content": raw_text[:500]},
+                {
+                    "role": "user",
+                    "content": (
+                        "Your last response was not valid JSON. "
+                        "Return ONLY the JSON object this time — a single "
+                        "JSON object matching the action schema. No prose, "
+                        "no safety notices, no markdown, no thinking process."
+                    ),
+                },
+            ]
+
+    raise ValueError(f"LLM output is not JSON after retry: {last_error}")
 
 
 # ----- Parsing helpers (kept verbatim from original) -----
 
+def _extract_json_objects(text: str) -> list[str]:
+    """
+    Scan the text and extract every balanced top-level {...} block.
+    Unlike a greedy regex, this correctly handles nested braces and
+    braces inside string literals, and won't grab a giant span that
+    happens to start at the first '{' and end at the last '}'.
+    """
+    blocks: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escape = False
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    blocks.append(text[start : i + 1])
+                    start = -1
+    return blocks
+
+
 def _parse_json(text: str) -> dict:
     """
-    Parse the model output. The provider should return JSON (we set
-    response_format=json_object where supported), but we are defensive:
-    strip code fences and find the first {...} block.
+    Parse the model output defensively:
+      1. Strip markdown fences and try a direct json.loads.
+      2. Otherwise, extract every balanced {...} block and prefer the
+         one that actually looks like an action (has an "action" key).
+         This avoids grabbing an unrelated dict (e.g. a DOM element
+         example the model echoed inside its reasoning).
     """
     text = text.strip()
     # Strip ```json ... ``` fences if any
@@ -177,13 +257,32 @@ def _parse_json(text: str) -> dict:
     text = re.sub(r"\s*```$", "", text)
 
     try:
-        return json.loads(text)
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
     except json.JSONDecodeError:
-        # Find the first JSON object in the text
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if not m:
-            raise ValueError(f"LLM output is not JSON: {text[:200]}")
-        return json.loads(m.group(0))
+        pass
+
+    candidates: list[dict] = []
+    for block in _extract_json_objects(text):
+        try:
+            obj = json.loads(block)
+            if isinstance(obj, dict):
+                candidates.append(obj)
+        except json.JSONDecodeError:
+            continue
+
+    if not candidates:
+        raise ValueError(f"LLM output is not JSON: {text[:200]}")
+
+    # Prefer an object that has the "action" key (the planner schema).
+    for obj in candidates:
+        if "action" in obj:
+            return obj
+
+    # Fall back to the last candidate (models usually put the final
+    # answer at the end of their output).
+    return candidates[-1]
 
 
 def validate_action_shape(action: Any) -> dict:

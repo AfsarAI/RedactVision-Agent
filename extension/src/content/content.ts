@@ -22,6 +22,8 @@ import {
   buildChatUI,
   ChatUIHandles,
   RedactionSummary,
+  rvLogoUrl,
+  upgradeLogoUrl,
 } from "../ui/chat-ui";
 import {
   loadPlannerConfig,
@@ -29,7 +31,66 @@ import {
   PlannerConfig,
 } from "../llm/llm-planner";
 
-console.log("RedactVision Agent: Content Script Loaded");
+console.log("[RedactVision] Content script initialized");
+
+/* ============================================================
+ *  Dashboard settings (shared with the popup via chrome.storage)
+ *  - active          master switch — launcher is not injected when off
+ *  - showWidget      launcher pill visibility
+ *  - autoRedact      privacy firewall on/off
+ *  - theme           dark | light | auto (applied to the chat card)
+ *  - domainWhitelist when non-empty, the agent only runs on these hosts
+ * ============================================================ */
+
+interface DashboardSettings {
+  active: boolean;
+  showWidget: boolean;
+  autoRedact: boolean;
+  theme: "dark" | "light" | "auto";
+  domainWhitelist: string[];
+}
+
+const DASHBOARD_KEY = "rv_dashboard_settings";
+
+/** Persist a single dashboard setting (used by in-card quick settings). */
+async function saveDashboardSetting<K extends keyof DashboardSettings>(
+  key: K,
+  value: DashboardSettings[K]
+): Promise<void> {
+  try {
+    const s = await loadDashboardSettings();
+    s[key] = value;
+    await chrome.storage.local.set({ [DASHBOARD_KEY]: s });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadDashboardSettings(): Promise<DashboardSettings> {
+  const defaults: DashboardSettings = {
+    active: true,
+    showWidget: true,
+    autoRedact: true,
+    theme: "dark",
+    domainWhitelist: [],
+  };
+  try {
+    const stored = await chrome.storage.local.get(DASHBOARD_KEY);
+    const s = stored?.[DASHBOARD_KEY] as Partial<DashboardSettings> | undefined;
+    if (!s) return defaults;
+    return {
+      active: s.active !== false,
+      showWidget: s.showWidget !== false,
+      autoRedact: s.autoRedact !== false,
+      theme: s.theme === "light" || s.theme === "auto" ? s.theme : "dark",
+      domainWhitelist: Array.isArray(s.domainWhitelist)
+        ? s.domainWhitelist.filter((d): d is string => typeof d === "string")
+        : [],
+    };
+  } catch {
+    return defaults;
+  }
+}
 
 /* ============================================================
  *  Local perception + privacy firewall (run once on page load)
@@ -40,16 +101,27 @@ console.log("RedactVision Agent: Content Script Loaded");
 const privacyFirewall = new PrivacyFirewall();
 const sanitizedPageDOM = privacyFirewall.sanitizePage(extractPageDOM());
 
-console.log("RedactVision Agent: Sanitized Page DOM");
-console.log(sanitizedPageDOM);
-console.log(
-  "RedactVision Agent: Local Token Count",
-  privacyFirewall.getLocalTokenMap().length
-);
-console.log(
-  "RedactVision Agent: Local Token Map",
-  privacyFirewall.getLocalTokenMap()
-);
+console.log("[RedactVision] Page perception completed");
+console.log("[RedactVision] Privacy scan completed");
+const summary = privacyFirewall.getLocalTokenMap();
+console.log(`[RedactVision] Sensitive regions detected: ${summary.length}`);
+console.log("[RedactVision] Context sanitized");
+console.log("[RedactVision] Sending sanitized context to agent");
+console.log("[RedactVision] Agent reasoning via server LLM");
+
+/* ============================================================
+ *  Background unified pipeline
+ *  ----------------------------------------------------------------
+ *  An earlier prototype used to spin up `runUnifiedPipeline()` here
+ *  on a 1-second timer to demonstrate the privacy flow. That demo:
+ *    - was unrelated to the chat agent,
+ *    - spammed the console with a hardcoded "click #submit" run,
+ *    - was the second competing pipeline called out in the
+ *      architecture correction.
+ *  The chat agent runs its own perception + privacy pipeline
+ *  inside `runPrompt()`; no second pipeline is started here.
+ * ============================================================ */
+
 
 /* ============================================================
  *  Stylesheet injection
@@ -69,7 +141,8 @@ const STYLE_FALLBACK = `
   }
   .rv-chat-header{display:flex;align-items:center;gap:10px;padding:12px 14px 11px;border-bottom:1px solid #2a3155;flex-shrink:0;cursor:grab;user-select:none}
   .rv-chat-brand{display:flex;align-items:center;gap:9px;flex:1;min-width:0}
-  .rv-chat-avatar{width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;letter-spacing:.5px;color:#fff;background:linear-gradient(135deg,#5b6bff,#22d3a0);border-radius:8px;box-shadow:0 2px 8px rgba(91,107,255,.4);flex-shrink:0}
+  .rv-chat-avatar{width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;letter-spacing:.5px;color:#fff;background:linear-gradient(135deg,#5b6bff,#22d3a0);border-radius:8px;box-shadow:0 2px 8px rgba(91,107,255,.4);flex-shrink:0;overflow:hidden}
+  .rv-chat-avatar img,.rv-statusbar-avatar img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;user-select:none;pointer-events:none;-webkit-user-drag:none}
   .rv-chat-title{font-size:12.5px;font-weight:600;color:#e6ecff;letter-spacing:-.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .rv-chat-status-row{display:flex;align-items:center;gap:5px;font-size:10.5px;color:#94a3b8;margin-top:1px}
   .rv-chat-dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
@@ -104,12 +177,12 @@ async function injectChatStyles(): Promise<void> {
   })();
   if (ctxValid) {
     try {
-      const cssUrl = chrome.runtime.getURL("ui/chat-ui.css");
+      const cssUrl = chrome.runtime.getURL("dist/ui/chat-ui.css");
       const resp = await fetch(cssUrl);
       if (resp.ok) css = await resp.text();
     } catch (e) {
       console.warn(
-        "[RedactVision] Could not load chat-ui.css from extension bundle, using bundled fallback:",
+        "[RedactVision] Could not load chat-ui.css from extension bundle, using fallback styles:",
         e instanceof Error ? e.message : e
       );
     }
@@ -218,20 +291,32 @@ async function openInPagePanelAsync(): Promise<void> {
     {
       onActivity: (activity) => ui.appendActivity(activity),
       onPlanResult: (result) => {
-        // The planner may return undefined (e.g. pure error). Default to
-        // a label derived from the source.
-        const label =
-          result.backendLabel ||
-          (result.source === "server-llm"
-            ? "Server"
-            : result.source === "fallback-rules"
-            ? "Local rules"
-            : "—");
+        // The planner is the server LLM. If it didn't return a label,
+        // show a generic "Server" pill so the user knows the action
+        // path. When the planner is offline, the label will already
+        // say "Server (offline)" from the planner itself.
+        const label = result.backendLabel || (result.source === "server-llm" ? "Server" : "—");
         ui.setBackend(label);
       },
     },
     config
   );
+
+  // Apply the popup's dashboard settings to this session.
+  const dash = await loadDashboardSettings();
+  session.setAutoRedact(dash.autoRedact);
+  ui.applyTheme(dash.theme);
+  ui.setAutoRedactState(dash.autoRedact);
+
+  // In-card quick settings (footer ⚙ / 🌙 buttons) persist to storage.
+  ui.onThemeToggle(async (next) => {
+    ui.applyTheme(next);
+    await saveDashboardSetting("theme", next);
+  });
+  ui.onAutoRedactChange(async (enabled) => {
+    session.setAutoRedact(enabled);
+    await saveDashboardSetting("autoRedact", enabled);
+  });
 
   const sessionSignal = { cancelled: false };
 
@@ -242,17 +327,69 @@ async function openInPagePanelAsync(): Promise<void> {
 
   ui.setStatus("ready", "Ready");
   ui.clearConversation();
-  ui.setBackend("Local"); // initial state, replaced on first plan
+  ui.setBackend("Server"); // replaced with the active LLM provider on first plan
 
   ui.onSend(async (text) => {
     ui.setInputValue("");
     ui.setInputEnabled(false);
     ui.setStatus("thinking", "Working…");
     try {
-      await session.runPrompt(text);
+      const outcome = await session.runPrompt(text);
+      const finalPhase = outcome.phase;
+      const isCompleted = finalPhase === "completed";
+      const isFailed = finalPhase === "failed" || finalPhase === "max_iterations_reached" || finalPhase === "cancelled";
+      const isOffline = finalPhase === "offline";
+      const uiPhase = isCompleted ? "completed" : (isFailed || isOffline) ? "error" : "thinking";
       // After the prompt, re-summarize (page state may have changed).
       ui.setRedactionSummary(session.getRedactionSummary(false));
-      ui.setStatus("completed", "Completed");
+      // Refresh the sanitized-data snapshot for the details panel.
+      ui.setSanitizedData(session.getSanitizedData());
+      // Render the polished end-of-task summary card.
+      const summaryPhase = isCompleted
+        ? "completed"
+        : isOffline
+        ? "offline"
+        : isFailed
+        ? finalPhase === "cancelled"
+          ? "cancelled"
+          : finalPhase === "max_iterations_reached"
+          ? "max_iterations_reached"
+          : "failed"
+        : "completed";
+      ui.showSummary({
+        phase: summaryPhase as "completed" | "failed" | "max_iterations_reached" | "cancelled" | "offline",
+        message: isCompleted
+          ? "Task completed successfully"
+          : isOffline
+          ? "Server agent offline"
+          : isFailed
+          ? finalPhase === "cancelled"
+            ? "Cancelled by user"
+            : finalPhase === "max_iterations_reached"
+            ? "Agent could not confirm completion within the safety limit"
+            : "Task could not be completed"
+          : "Stopped",
+        reason: outcome.reason,
+        iterations: outcome.iterations,
+        actionsPlanned: outcome.actionsPlanned,
+        actionsExecuted: outcome.actionsExecuted,
+        durationMs: outcome.durationMs,
+        privacy: session.getRedactionSummary(false),
+      });
+      ui.setStatus(
+        uiPhase,
+        isCompleted
+          ? "Completed"
+          : isOffline
+          ? "Server offline"
+          : isFailed
+          ? finalPhase === "cancelled"
+            ? "Cancelled"
+            : finalPhase === "max_iterations_reached"
+            ? "Stopped"
+            : "Failed"
+          : "Working…"
+      );
     } catch (err) {
       ui.setStatus("error", "Error");
       console.error("[ContentScript] Agent error:", err);
@@ -297,9 +434,10 @@ function closeInPagePanel(): void {
 
 /* ============================================================
  *  Floating launcher pill (opens the in-page panel)
- *  - Persistent on every page; clicking it opens (or restores) the card.
- *  - Draggable launcher is NOT supported — the launcher is a fixed
- *    point of entry; the card itself is what the user drags.
+ *  - Persistent on every page; clicking it opens / toggles the card.
+ *  - The pill itself is a hard-fixed 72×72 circular FAB (see CSS in
+ *    injectAgentIndicator). Dragging moves it via left/top only and
+ *    clamps it to the viewport; width/height are never changed.
  * ============================================================ */
 
 function injectAgentIndicator(): void {
@@ -312,79 +450,206 @@ function injectAgentIndicator(): void {
       position: fixed;
       bottom: 20px;
       right: 20px;
+      box-sizing: border-box;
+      width: 72px;
+      height: 72px;
+      min-width: 72px;
+      max-width: 72px;
+      min-height: 72px;
+      max-height: 72px;
+      margin: 0;
+      padding: 0;
       z-index: 2147483644;
-      cursor: pointer;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      transition: transform 0.2s, box-shadow 0.2s;
-      pointer-events: auto;
-    }
-    #rv-agent-indicator:hover {
-      transform: translateY(-2px);
-    }
-    .rv-indicator-inner {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 14px 8px 12px;
-      background: linear-gradient(135deg, #0e1428 0%, #131a30 100%);
-      border: 1px solid rgba(91, 107, 255, 0.4);
-      border-radius: 999px;
-      box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
-      font-size: 12.5px;
-      font-weight: 500;
-      color: #e6ecff;
-      backdrop-filter: blur(10px);
-    }
-    .rv-indicator-icon {
-      width: 22px;
-      height: 22px;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.5px;
-      color: white;
-      background: linear-gradient(135deg, #5b6bff 0%, #22d3a0 100%);
-      border-radius: 6px;
-    }
-    .rv-indicator-name { color: #e6ecff; font-weight: 600; }
-    .rv-indicator-status {
-      color: #22d3a0;
-      font-size: 10.5px;
-      margin-left: 2px;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-    }
-    .rv-indicator-status::before {
-      content: "";
-      width: 5px;
-      height: 5px;
+      overflow: hidden;
       border-radius: 50%;
-      background: #22d3a0;
-      box-shadow: 0 0 4px #22d3a0;
+      border: 2px solid rgba(255, 255, 255, 0.24);
+      background: linear-gradient(135deg, #5b6bff 0%, #22d3a0 100%);
+      box-shadow:
+        0 10px 28px rgba(0, 0, 0, 0.45),
+        0 0 0 2px rgba(7, 11, 24, 0.55),
+        inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      pointer-events: auto;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;         /* so touch-drag doesn't scroll the page */
+      cursor: grab;
+      transition: transform 0.2s, box-shadow 0.2s, border-color 0.2s;
+    }
+    #rv-agent-indicator img {
+      width: 100%;
+      height: 100%;
+      flex: 0 0 100%;
+      object-fit: cover;
+      border-radius: 50%;
+      display: block;
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    #rv-agent-indicator:hover {
+      transform: scale(1.06);
+      box-shadow:
+        0 14px 34px rgba(0, 0, 0, 0.5),
+        0 0 0 2px rgba(7, 11, 24, 0.55),
+        inset 0 1px 0 rgba(255, 255, 255, 0.2),
+        0 0 0 4px rgba(91, 107, 255, 0.35);
+    }
+    /* While dragging: suppress the hover lift and transition jank.
+       Width/height are NEVER touched here — only left/top move. */
+    #rv-agent-indicator.rv-dragging,
+    #rv-agent-indicator.rv-dragging:hover {
+      transform: none;
+      cursor: grabbing;
+      transition: none;
+      box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5), 0 0 0 2px rgba(91, 107, 255, 0.5);
     }
   `;
   document.head.appendChild(style);
 
   const indicator = document.createElement("div");
   indicator.id = "rv-agent-indicator";
-  indicator.innerHTML = `
-    <div class="rv-indicator-inner">
-      <span class="rv-indicator-icon">RV</span>
-      <span class="rv-indicator-name">RedactVision</span>
-      <span class="rv-indicator-status">Ready</span>
-    </div>
-  `;
+  indicator.setAttribute("role", "button");
+  indicator.title = "RedactVision Agent — click to open, drag to move";
+  indicator.innerHTML = `<img data-rv-pill-logo src="${rvLogoUrl()}" alt="RedactVision" draggable="false" />`;
   document.body.appendChild(indicator);
 
-  indicator.addEventListener("click", () => {
-    void openInPagePanel();
+  // CSP-safe logo upgrade + SVG fallback (same hardening as the chat card).
+  const pillLogo = indicator.querySelector(
+    "img[data-rv-pill-logo]"
+  ) as HTMLImageElement | null;
+  if (pillLogo) {
+    pillLogo.addEventListener("error", () => {
+      if (pillLogo.src !== rvLogoUrl()) pillLogo.src = rvLogoUrl();
+    });
+    void upgradeLogoUrl(pillLogo, rvLogoUrl());
+  }
+
+  // ---- Drag: pointer events (mouse + touch), clamped to the viewport ----
+  // Sub-threshold movement is treated as a click (toggles the chat open).
+  const DRAG_CLICK_THRESHOLD = 5; // px
+  let dragState: {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    baseLeft: number;
+    baseTop: number;
+    moved: boolean;
+  } | null = null;
+
+  indicator.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    indicator.setPointerCapture(e.pointerId);
+    const rect = indicator.getBoundingClientRect();
+    dragState = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      baseLeft: rect.left,
+      baseTop: rect.top,
+      moved: false,
+    };
   });
+
+  indicator.addEventListener("pointermove", (e) => {
+    if (!dragState || dragState.pointerId !== e.pointerId) return;
+    const dx = e.clientX - dragState.startX;
+    const dy = e.clientY - dragState.startY;
+    if (!dragState.moved && Math.hypot(dx, dy) < DRAG_CLICK_THRESHOLD) {
+      return; // still a potential click
+    }
+    dragState.moved = true;
+    indicator.classList.add("rv-dragging");
+
+    // Switch to left/top anchoring and clamp to the visible viewport so
+    // the pill can never be dragged off-screen.
+    const maxX = Math.max(0, window.innerWidth - indicator.offsetWidth);
+    const maxY = Math.max(0, window.innerHeight - indicator.offsetHeight);
+    const nx = Math.min(Math.max(0, dragState.baseLeft + dx), maxX);
+    const ny = Math.min(Math.max(0, dragState.baseTop + dy), maxY);
+
+    indicator.style.removeProperty("right");
+    indicator.style.removeProperty("bottom");
+    indicator.style.left = `${nx}px`;
+    indicator.style.top = `${ny}px`;
+  });
+
+  const finishIndicatorDrag = (e: PointerEvent) => {
+    if (!dragState || dragState.pointerId !== e.pointerId) return;
+    const wasClick = !dragState.moved;
+    dragState = null;
+    indicator.classList.remove("rv-dragging");
+    if (wasClick) toggleLauncherPanel();
+  };
+
+  indicator.addEventListener("pointerup", finishIndicatorDrag);
+  indicator.addEventListener("pointercancel", finishIndicatorDrag);
 }
 
-injectAgentIndicator();
+/**
+ * Launcher pill click → open/toggle the chat widget.
+ *  - No panel yet   → open it.
+ *  - Card minimized → restore + focus.
+ *  - Card open      → close it (same toggle feel as a launcher button).
+ */
+function toggleLauncherPanel(): void {
+  if (!panel) {
+    void openInPagePanel();
+    return;
+  }
+  const card = panel.root as HTMLElement;
+  if (card.classList.contains("rv-minimized")) {
+    void openInPagePanel();
+  } else {
+    closeInPagePanel();
+  }
+}
+
+/* ============================================================
+ *  Widget visibility + settings application
+ * ============================================================ */
+
+function applyWidgetVisibility(visible: boolean): void {
+  const launcher = document.getElementById("rv-agent-indicator");
+  if (launcher) {
+    (launcher as HTMLElement).style.display = visible ? "" : "none";
+  }
+  if (!visible && panel) {
+    closeInPagePanel();
+  }
+}
+
+function removeAgentUi(): void {
+  closeInPagePanel();
+  document.getElementById("rv-agent-indicator")?.remove();
+}
+
+/** Re-read dashboard settings and apply them live (popup → content). */
+async function applyDashboardSettings(): Promise<void> {
+  const s = await loadDashboardSettings();
+
+  // Master switch — remove the UI entirely when off, inject when on.
+  const whitelisted =
+    s.domainWhitelist.length === 0 || s.domainWhitelist.includes(HOSTNAME);
+  const shouldRun = s.active && whitelisted;
+  const launcher = document.getElementById("rv-agent-indicator");
+  if (shouldRun && !launcher) {
+    injectAgentIndicator();
+    applyWidgetVisibility(s.showWidget);
+  } else if (!shouldRun) {
+    removeAgentUi();
+    return;
+  }
+
+  applyWidgetVisibility(s.showWidget);
+  if (panel) {
+    panel.session.setAutoRedact(s.autoRedact);
+    panel.ui.applyTheme(s.theme);
+  }
+}
 
 /* ============================================================
  *  Popup message bridge
@@ -418,5 +683,34 @@ chrome.runtime.onMessage.addListener(
       sendResponse({ tokens });
       return true;
     }
+
+    if (msg.type === "RV_SET_WIDGET_VISIBLE") {
+      const visible = (msg as { visible?: boolean }).visible;
+      void applyWidgetVisibility(visible !== false);
+      return true;
+    }
+
+    if (msg.type === "RV_SETTINGS_UPDATED") {
+      void applyDashboardSettings();
+      return true;
+    }
   }
 );
+
+/* ============================================================
+ *  Init — respect the dashboard settings before injecting anything.
+ *  The launcher is only injected when the agent is active AND the
+ *  host is allowed by the domain whitelist (if non-empty).
+ * ============================================================ */
+
+void (async function init() {
+  const s = await loadDashboardSettings();
+  const whitelisted =
+    s.domainWhitelist.length === 0 || s.domainWhitelist.includes(HOSTNAME);
+  if (!s.active || !whitelisted) {
+    console.log("[RedactVision] Agent disabled for this page (settings/whitelist)");
+    return;
+  }
+  injectAgentIndicator();
+  applyWidgetVisibility(s.showWidget);
+})();

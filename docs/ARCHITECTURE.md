@@ -80,6 +80,56 @@
              +--------> re-perceive / re-sanitize / re-reason
 ```
 
+## ⚠️ Implementation Status — Read Before Claiming Capability
+
+The architecture above is the **target**. The **current implementation** is partial. This section is the source of truth for what actually runs.
+
+### What is ACTIVE in the default content-script flow (`content.ts` lines 39–49)
+
+```text
+extractPageDOM()  →  PrivacyFirewall.sanitizePage()  →  sanitizedPageDOM  →  /llm/plan
+                       ├── DOM semantics (Layer 1)
+                       └── regex/heuristics (Layer 2)
+```
+
+That is the entire active pipeline. DOM text only.
+
+### What EXISTS in source but is NOT wired (modules available, not called)
+
+| Layer | File | Library | Status |
+|---|---|---|---|
+| Screenshot capture | `perception/screenshot-capture.ts` | Chrome `tabs.captureVisibleTab` via background | Module only, not invoked |
+| Local OCR | `perception/ocr-engine.ts` | Tesseract.js | Module only, not invoked |
+| Local NER | `perception/ner-engine.ts` | Transformers.js | Module only, not invoked |
+| Local CV / Vision | `perception/cv-engine.ts` | Transformers.js (face / ID / card / signature detection) | Module only, not invoked |
+| Evidence fusion | `perception/perception-pipeline.ts` | Orchestrator: DOM + OCR + NER + CV in parallel | Module only, not invoked |
+| Sensitive data map | `perception/sensitive-data-map.ts` | Schema for fused output | Schema only, not populated by default |
+| Visual redaction | `perception/visual-redaction-engine.ts` | Blur / mask / box over sensitive image regions | Module only, not integrated |
+
+### Consequence (must not be hidden)
+
+Sensitive information rendered **only in images, canvas, screenshots, or other visual elements** (faces, cards, document photos, hidden rendered text, custom components) is **NOT detected or redacted** by the current default pipeline. Such data is not in the DOM, so the DOM-only path cannot see it.
+
+**Privacy invariant §4.1 ("raw sensitive data must not cross the network boundary") is currently enforced only for DOM-text PII, not for visual PII.** Until the perception pipeline is wired into `content.ts` (so that screenshot → OCR + CV + NER → fusion → visual redaction runs before any server call), this gap remains.
+
+### What MUST change to close the gap
+
+`content.ts` must invoke `PerceptionPipeline` before calling `/llm/plan`:
+
+1. `captureViewportScreenshot()` → image
+2. In parallel:
+   - DOM extraction + privacy firewall (current path)
+   - OCR over the screenshot
+   - CV detection (faces / cards / documents)
+   - NER over OCR text + DOM text
+3. `EvidenceFusion` produces a `SensitiveDataMap` keyed by region, type, confidence
+4. Apply visual redaction (blur/mask/box) over each region in the image
+5. Apply DOM masking for the same items
+6. Build a `SanitizedContext` containing sanitized DOM + sanitized image crops + safe OCR text
+7. Send only the sanitized context to the server
+
+Until that is implemented and tested end-to-end, every external claim (README, docs, demo) must label visual redaction as **partial / experimental**.
+
 ## Planner Invariant
 
 The action-planning flow has **one** planner and **one** automatic fallback:
@@ -171,4 +221,7 @@ Do not automatically send a full screenshot. Prefer:
 - OCR text;
 - sanitized image crops when necessary.
 
+**Current default behaviour:** Only sanitized DOM is sent. Screenshots are NOT captured and visual redaction is NOT applied unless the perception pipeline is explicitly invoked (which the current `content.ts` does NOT do).
+
 The visual workflow image supplied with the project illustrates this separation between the on-device trusted zone and the server zone.
+

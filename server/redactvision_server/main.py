@@ -57,9 +57,9 @@ from .types import (
     ActionType,
     ConnectionStatus,
 )
-from .mock_agent import determine_action, validate_action_request
+from .mock_agent import validate_action_request  # privacy validator; the rule-based mock agent is no longer used as a planner
 from .llm import plan_with_llm, health as llm_health, is_configured as llm_configured, validate_action_shape as llm_validate_action_shape
-from .providers import discover_all as discover_provider_models
+from .providers import PROVIDERS
 
 
 # Configure logging
@@ -108,26 +108,22 @@ manager = ConnectionManager()
 
 
 @app.on_event("startup")
-async def startup_discover_providers() -> None:
+async def startup_list_providers() -> None:
     """
-    On startup, ask each configured provider for a working model and
-    cache it. This means the server doesn't need the user to keep
-    `server/.env` model names in sync with each provider's current
-    offerings — if a slug is stale, we discover a fresh one.
+    On startup, list the configured providers and their model slugs.
+    No live model discovery is performed — provider model slugs are
+    pinned in providers.py and validated at call time. This keeps
+    startup fast and avoids probing the network before the first
+    user request.
     """
     if not llm_configured():
-        logger.info("No LLM providers configured at startup; skipping discovery.")
+        logger.info("No LLM providers configured at startup.")
         return
-    try:
-        results = discover_provider_models(timeout=8.0)
-        picked = {k: v for k, v in results.items() if v}
-        if picked:
-            logger.info("Auto-discovered working models: %s", picked)
-        else:
-            logger.warning("Provider discovery returned no working models. "
-                           "Calls will use the static env-var defaults.")
-    except Exception as exc:
-        logger.warning("Provider discovery failed: %s", exc)
+    configured = [
+        {"name": p.name, "models": p.models()}
+        for p in PROVIDERS if p.available()
+    ]
+    logger.info("Configured LLM providers: %s", configured)
 
 
 @app.get("/")
@@ -309,15 +305,16 @@ async def llm_health_endpoint():
 @app.post("/llm/discover")
 async def llm_discover_endpoint():
     """
-    Re-run provider model discovery. The startup hook does this
-    automatically; this endpoint is for forcing a refresh (e.g. after
-    the user rotates a key).
+    Return the configured providers and their pinned model slugs.
+    No live discovery — model slugs are validated at call time.
     """
-    try:
-        results = discover_provider_models(timeout=8.0)
-        return {"ok": True, "discovered": results}
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "discovered": {}}
+    return {
+        "ok": True,
+        "providers": [
+            {"name": p.name, "models": p.models(), "available": p.available()}
+            for p in PROVIDERS
+        ],
+    }
 
 
 @app.post("/llm/plan")
@@ -332,9 +329,15 @@ async def llm_plan(request: PlanRequest):
 
     Response:
       - action: structured action dict matching the LLM action schema
-      - source: "server-llm" or "fallback"
+      - source: "server-llm" or "fallback-mock"
+      - provider: display name of the LLM provider that answered
 
     Privacy: re-runs validate_action_request to ensure no raw PII slips in.
+
+    Architectural note: the server is the SOLE planner. When no LLM is
+    configured, the server does NOT silently invent a hardcoded rule
+    agent — it returns a 503 with an explicit `code: "llm_not_configured"`
+    so the client can surface a clear "Agent offline" state to the user.
     """
     # Re-package as a SanitizedEvent so the privacy check works unchanged
     fake_event = SanitizedEvent(
@@ -349,13 +352,21 @@ async def llm_plan(request: PlanRequest):
         raise HTTPException(status_code=400, detail=f"Privacy violation: {error}")
 
     if not llm_configured():
-        # Graceful fallback to the deterministic mock planner
-        logger.info("LLM not configured — using mock planner")
-        action = determine_action(fake_event)
-        return PlanResponse(
-            action=action.model_dump(exclude_none=True),
-            source="fallback-mock",
-            provider="Local rules",
+        logger.warning(
+            "LLM not configured — refusing to invent an action via hardcoded rules. "
+            "Set at least one provider key in .env (see .env.example)."
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "llm_not_configured",
+                "message": (
+                    "No LLM provider is configured on the server. The RedactVision "
+                    "Agent requires a server-side LLM to interpret natural-language "
+                    "tasks. Configure at least one provider in the server's .env file."
+                ),
+                "code": "llm_not_configured",
+            },
         )
 
     try:
@@ -363,13 +374,21 @@ async def llm_plan(request: PlanRequest):
         validated = llm_validate_action_shape(raw)
         return PlanResponse(action=validated, source="server-llm", provider=provider_name)
     except (RuntimeError, ValueError) as e:
-        logger.error("LLM plan failed: %s — falling back to mock", e)
-        # On LLM failure, return a useful error AND a fallback so the client can keep going
-        action = determine_action(fake_event)
-        return PlanResponse(
-            action=action.model_dump(exclude_none=True),
-            source="fallback-mock",
-            provider="Local rules",
+        logger.error("LLM plan failed: %s", e)
+        # On LLM failure, do NOT silently substitute a hardcoded mock
+        # agent. Return a clear error so the client knows the planner
+        # is currently unavailable.
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "llm_unavailable",
+                "message": (
+                    "The server's LLM provider chain failed to produce a valid "
+                    "action. The agent cannot safely guess what to do."
+                ),
+                "code": "llm_unavailable",
+                "detail": str(e),
+            },
         )
 
 

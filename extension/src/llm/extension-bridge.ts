@@ -41,6 +41,10 @@ export interface PlanBridgeResult {
     source: string;
     provider?: string | null;
     model?: string | null;
+    /** Server-side error code (e.g. "llm_not_configured", "llm_unavailable"). */
+    code?: string | null;
+    /** Human-readable error message. */
+    message?: string | null;
   } | null;
   error?: string;
 }
@@ -120,10 +124,29 @@ async function planViaServerDirect(
       }),
     });
     if (!resp.ok) {
+      // Try to read the error body (e.g. llm_not_configured).
+      let body: PlanBridgeResult["body"] = null;
+      try {
+        const errJson = (await resp.json()) as {
+          code?: string;
+          message?: string;
+          error?: string;
+        };
+        body = {
+          action: null,
+          source: "error",
+          provider: null,
+          model: null,
+          code: errJson.code || null,
+          message: errJson.message || errJson.error || null,
+        };
+      } catch {
+        /* not JSON */
+      }
       return {
         ok: false,
         status: resp.status,
-        body: null,
+        body,
         error: `HTTP ${resp.status}`,
       };
     }
@@ -132,6 +155,8 @@ async function planViaServerDirect(
       source: string;
       provider?: string | null;
       model?: string | null;
+      code?: string | null;
+      message?: string | null;
     };
     return { ok: true, status: resp.status, body };
   } catch (e) {

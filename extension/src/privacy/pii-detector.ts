@@ -99,6 +99,21 @@ function detectPhones(
   return matches;
 }
 
+function luhnCheck(digits: string): boolean {
+  let sum = 0;
+  let alternate = false;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let n = parseInt(digits.substring(i, i + 1), 10);
+    if (alternate) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+    alternate = !alternate;
+  }
+  return sum % 10 === 0;
+}
+
 function detectCards(
   text: string
 ): SensitiveMatch[] {
@@ -114,7 +129,8 @@ function detectCards(
 
       if (
         digits.length >= 13 &&
-        digits.length <= 19
+        digits.length <= 19 &&
+        luhnCheck(digits)
       ) {
         matches.push(
           createMatch(
