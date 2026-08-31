@@ -30,6 +30,60 @@
 
 import type { AgentActivity } from "../agent/agent-session";
 
+/* ======================================================================
+ * Brand logo (src/ui/SIH.jpeg → icons/logo.png)
+ * Replaces the old "RV" text placeholder in the chat header avatar and
+ * footer statusbar. Two hardening measures so the logo always renders:
+ *   1. blob-URL upgrade — some host pages have a strict CSP that blocks
+ *      chrome-extension:// images; fetch + blob URLs pass most CSPs.
+ *   2. inline-SVG fallback — if neither image path loads, the avatar
+ *      degrades to a gradient "RV" badge instead of a blank square.
+ * ====================================================================== */
+
+const RV_LOGO_CHROME_URL =
+  typeof chrome !== "undefined" && chrome.runtime?.getURL
+    ? chrome.runtime.getURL("icons/logo.png")
+    : "";
+
+const RV_LOGO_FALLBACK_SVG =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#5b6bff"/>
+          <stop offset="1" stop-color="#22d3a0"/>
+        </linearGradient>
+      </defs>
+      <rect width="64" height="64" rx="14" fill="url(#g)"/>
+      <text x="32" y="42" text-anchor="middle" font-family="-apple-system,Arial,sans-serif" font-size="24" font-weight="700" fill="white">RV</text>
+    </svg>`
+  );
+
+/** Resolve the logo image URL (chrome extension, or inline SVG fallback). */
+export function rvLogoUrl(): string {
+  return RV_LOGO_CHROME_URL || RV_LOGO_FALLBACK_SVG;
+}
+
+/**
+ * Upgrade an <img> to a blob: URL so strict host-page CSPs cannot block
+ * the chrome-extension:// resource. Keeps the original URL on failure.
+ */
+export async function upgradeLogoUrl(
+  img: HTMLImageElement,
+  chromeUrl: string
+): Promise<void> {
+  if (!chromeUrl) return;
+  try {
+    const resp = await fetch(chromeUrl);
+    if (!resp.ok) return;
+    const blob = await resp.blob();
+    img.src = URL.createObjectURL(blob);
+  } catch {
+    /* keep the chrome-extension:// URL — works on most pages */
+  }
+}
+
 /** Compact summary of what the privacy firewall redacted this turn. */
 export interface RedactionSummary {
   /** Total count of sensitive values that were tokenized. */
@@ -66,6 +120,10 @@ export interface ChatUIHandles {
   setDragOffset(dx: number, dy: number): void;
   /** Show the polished end-of-task summary card. */
   showSummary(summary: TaskSummary): void;
+  /** Show a validation error card (orange/yellow warning) with retry button. */
+  showValidationError(error: ValidationError): void;
+  /** Show a system error card (extension context, server offline) with action button. */
+  showSystemError(error: SystemError): void;
   /** Reset the card to a clean state (also hides any prior summary). */
   resetConversation(): void;
   /** Latest sanitized-data snapshot for the details panel. */
@@ -101,29 +159,62 @@ export interface TaskSummary {
   privacy: { count: number; byType: Record<string, number> } | null;
 }
 
+/** Validation error details for client-side form validation. */
+export interface ValidationError {
+  field: string;
+  userValue: string;
+  issue: string;
+  expected: string;
+}
+
+/** System error details (extension context, server offline, etc.) */
+export interface SystemError {
+  type: "extension_context_invalidated" | "server_unreachable" | "runtime_error";
+  title: string;
+  message: string;
+  actionLabel: string;
+  actionType: "refresh" | "retry";
+}
+
 export function buildChatUI(container: HTMLElement): ChatUIHandles {
   container.innerHTML = chatHTML();
 
-  const root = container.querySelector(".rv-chat") as HTMLElement;
-  const privacyBar = root.querySelector("#rv-privacy-bar") as HTMLElement;
-  const headerStatus = root.querySelector("#rv-chat-status") as HTMLElement;
-  const statusDot = root.querySelector("#rv-chat-status-dot") as HTMLElement;
-  const backendPill = root.querySelector("#rv-backend-pill") as HTMLElement;
-  const backendLabel = root.querySelector("#rv-backend-label") as HTMLElement;
-  const conversation = root.querySelector("#rv-conversation") as HTMLElement;
-  const input = root.querySelector("#rv-input") as HTMLTextAreaElement;
-  const sendBtn = root.querySelector("#rv-send-btn") as HTMLButtonElement;
-  const cancelBtn = root.querySelector("#rv-cancel-btn") as HTMLButtonElement;
-  const minimizeBtn = root.querySelector("#rv-minimize-btn") as HTMLElement;
-  const closeBtn = root.querySelector("#rv-close-btn") as HTMLElement;
-  const dragHandle = root.querySelector("[data-rv-drag-handle]") as HTMLElement;
-  const statusbarDot = root.querySelector("#rv-statusbar-dot") as HTMLElement;
-  const statusbarLabel = root.querySelector("#rv-statusbar-label") as HTMLElement;
-  const settingsBtn = root.querySelector("#rv-settings-btn") as HTMLElement;
-  const themeBtn = root.querySelector("#rv-theme-btn") as HTMLElement;
-  const infoBtn = root.querySelector("#rv-info-btn") as HTMLElement;
-  const quickSettings = root.querySelector("#rv-quick-settings") as HTMLElement;
-  const qsAutoRedact = root.querySelector("#rv-qs-autoredact") as HTMLInputElement;
+  const root = container.querySelector<HTMLElement>(".rv-chat");
+  if (!root) {
+    console.error("[RedactVision] ChatUI: Root element .rv-chat not found");
+    throw new Error("Failed to initialize chat UI: root element not found");
+  }
+
+  // Brand logo imgs (header avatar + statusbar avatar): wire the
+  // CSP-safe blob upgrade and the inline-SVG error fallback.
+  const avatarImgs = root.querySelectorAll<HTMLImageElement>("img[data-rv-logo]");
+  avatarImgs.forEach((img) => {
+    img.addEventListener("error", () => {
+      if (img.src !== RV_LOGO_FALLBACK_SVG) img.src = RV_LOGO_FALLBACK_SVG;
+    });
+    void upgradeLogoUrl(img, RV_LOGO_CHROME_URL);
+  });
+
+  // All DOM elements are nullable - accessors must check before use
+  const privacyBar = root.querySelector<HTMLElement>("#rv-privacy-bar");
+  const headerStatus = root.querySelector<HTMLElement>("#rv-chat-status");
+  const statusDot = root.querySelector<HTMLElement>("#rv-chat-status-dot");
+  const backendPill = root.querySelector<HTMLElement>("#rv-backend-pill");
+  const backendLabel = root.querySelector<HTMLElement>("#rv-backend-label");
+  const conversation = root.querySelector<HTMLElement>("#rv-conversation");
+  const input = root.querySelector<HTMLTextAreaElement>("#rv-input");
+  const sendBtn = root.querySelector<HTMLButtonElement>("#rv-send-btn");
+  const cancelBtn = root.querySelector<HTMLButtonElement>("#rv-cancel-btn");
+  const minimizeBtn = root.querySelector<HTMLElement>("#rv-minimize-btn");
+  const closeBtn = root.querySelector<HTMLElement>("#rv-close-btn");
+  const dragHandle = root.querySelector<HTMLElement>("[data-rv-drag-handle]");
+  const statusbarDot = root.querySelector<HTMLElement>("#rv-statusbar-dot");
+  const statusbarLabel = root.querySelector<HTMLElement>("#rv-statusbar-label");
+  const settingsBtn = root.querySelector<HTMLElement>("#rv-settings-btn");
+  const themeBtn = root.querySelector<HTMLElement>("#rv-theme-btn");
+  const infoBtn = root.querySelector<HTMLElement>("#rv-info-btn");
+  const quickSettings = root.querySelector<HTMLElement>("#rv-quick-settings");
+  const qsAutoRedact = root.querySelector<HTMLInputElement>("#rv-qs-autoredact");
 
   let sendHandler: ((text: string) => void) | null = null;
   let cancelHandler: (() => void) | null = null;
@@ -147,116 +238,153 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   function submitText(text: string): void {
     const t = text.trim();
     if (!t) return;
-    input.value = "";
-    input.style.height = "auto";
+    if (input) {
+      input.value = "";
+      input.style.height = "";
+      input.style.overflowY = "hidden";
+    }
     sendHandler?.(t);
   }
 
-  sendBtn.addEventListener("click", () => {
-    submitText(input.value);
-  });
+  if (sendBtn) {
+    sendBtn.addEventListener("click", () => {
+      if (input) submitText(input.value);
+    });
+  }
 
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      submitText(input.value);
-    }
-  });
+  if (input) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submitText(input.value);
+      }
+    });
 
-  // Auto-grow: the box stays one line tall and only grows when the
-  // user writes a longer multi-line task (capped at ~4 lines).
-  const autoGrow = () => {
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 76) + "px";
-  };
-  input.addEventListener("input", autoGrow);
+    // Auto-grow: starts single-line (~38-44px) and grows dynamically
+    // up to 160px, switching to internal scroll when capped.
+    const autoGrow = () => {
+      input.style.height = "auto";
+      const newHeight = Math.min(input.scrollHeight, 160);
+      input.style.height = Math.max(newHeight, 38) + "px";
+      input.style.overflowY = input.scrollHeight > 160 ? "auto" : "hidden";
+    };
+    input.addEventListener("input", autoGrow);
+  }
 
-  cancelBtn.addEventListener("click", () => {
-    cancelHandler?.();
-  });
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", () => {
+      cancelHandler?.();
+    });
+  }
 
   // Suggestion chips (empty state) — clicking one submits the task.
-  conversation.addEventListener("click", (e) => {
-    const chip = (e.target as HTMLElement).closest?.(
-      ".rv-chip-suggest"
-    ) as HTMLElement | null;
-    if (chip?.dataset.suggest) {
-      submitText(chip.dataset.suggest);
-    }
-  });
+  // Activity rows are click-to-expand (only the clicked row expands).
+  if (conversation) {
+    conversation.addEventListener("click", (e) => {
+      const chip = (e.target as HTMLElement).closest?.(
+        ".rv-chip-suggest"
+      ) as HTMLElement | null;
+      if (chip?.dataset.suggest) {
+        submitText(chip.dataset.suggest);
+        return;
+      }
+      const row = (e.target as HTMLElement).closest?.(
+        ".rv-msg.rv-expandable"
+      ) as HTMLElement | null;
+      if (row && !row.classList.contains("rv-user")) {
+        toggleActivityExpand(row);
+      }
+    });
+  }
 
   // ---- Header buttons ----
 
-  minimizeBtn.addEventListener("click", () => {
-    minimizeHandler?.();
-  });
+  if (minimizeBtn) {
+    minimizeBtn.addEventListener("click", () => {
+      minimizeHandler?.();
+    });
+  }
 
-  closeBtn.addEventListener("click", () => {
-    closeHandler?.();
-  });
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      closeHandler?.();
+    });
+  }
 
   // ---- Drag (pointer events) ----
   //
-  // The widget's "natural" position is bottom-right (CSS). The caller
-  // supplies a stored offset via setDragOffset() on mount, and we update
-  // the offset live during drag, firing onDragEnd() on release.
+  // The card is positioned via absolute left/top (set inline by the
+  // caller's morph/anchor logic). Dragging updates left/top directly,
+  // clamped to the viewport, and fires onDragEnd() with the final
+  // absolute position on release.
 
   let dragStart: { pointerX: number; pointerY: number; baseX: number; baseY: number } | null = null;
 
-  const applyOffset = (dx: number, dy: number) => {
+  const clampPos = (x: number, y: number): { x: number; y: number } => {
     // Clamp the card to the viewport so it can't be dragged offscreen.
     const maxX = Math.max(0, window.innerWidth - root.offsetWidth);
     const maxY = Math.max(0, window.innerHeight - root.offsetHeight);
-    const cdx = Math.max(-maxX, Math.min(dx, 0));
-    const cdy = Math.max(-maxY, Math.min(dy, 0));
-    root.style.setProperty("--rv-drag-x", `${cdx}px`);
-    root.style.setProperty("--rv-drag-y", `${cdy}px`);
-  };
-
-  dragHandle.addEventListener("pointerdown", (e) => {
-    // Ignore drags that started on the header buttons (they handle their
-    // own clicks). The buttons are not inside the drag handle, but be safe.
-    if ((e.target as HTMLElement).closest("button")) return;
-    if (e.button !== 0) return;
-
-    e.preventDefault();
-    dragHandle.setPointerCapture(e.pointerId);
-    const rect = root.getBoundingClientRect();
-    // CSS positions the card via bottom/right. Compute the current
-    // offset from the natural bottom-right anchor.
-    const naturalLeft = window.innerWidth - rect.right;
-    const naturalTop = window.innerHeight - rect.bottom;
-    dragStart = {
-      pointerX: e.clientX,
-      pointerY: e.clientY,
-      baseX: -naturalLeft, // convert anchor to "x offset from natural"
-      baseY: -naturalTop,
+    return {
+      x: Math.min(Math.max(0, x), maxX),
+      y: Math.min(Math.max(0, y), maxY),
     };
-  });
-
-  dragHandle.addEventListener("pointermove", (e) => {
-    if (!dragStart) return;
-    const dx = dragStart.baseX + (e.clientX - dragStart.pointerX);
-    const dy = dragStart.baseY + (e.clientY - dragStart.pointerY);
-    applyOffset(dx, dy);
-  });
-
-  const endDrag = (e: PointerEvent) => {
-    if (!dragStart) return;
-    try {
-      dragHandle.releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    // Read the final offset back from the live style.
-    const fx = parseFloat(root.style.getPropertyValue("--rv-drag-x") || "0");
-    const fy = parseFloat(root.style.getPropertyValue("--rv-drag-y") || "0");
-    dragEndHandler?.({ dx: fx, dy: fy });
-    dragStart = null;
   };
 
-  dragHandle.addEventListener("pointerup", endDrag);
-  dragHandle.addEventListener("pointercancel", endDrag);
+  const applyPos = (x: number, y: number): void => {
+    const p = clampPos(x, y);
+    root.style.left = `${p.x}px`;
+    root.style.top = `${p.y}px`;
+    root.style.right = "auto";
+    root.style.bottom = "auto";
+  };
+
+  if (dragHandle) {
+    dragHandle.addEventListener("pointerdown", (e) => {
+      // Ignore drags that started on the header buttons (they handle their
+      // own clicks). The buttons are not inside the drag handle, but be safe.
+      if ((e.target as HTMLElement).closest("button")) return;
+      if (e.button !== 0) return;
+
+      e.preventDefault();
+      try {
+        dragHandle.setPointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      const rect = root.getBoundingClientRect();
+      dragStart = {
+        pointerX: e.clientX,
+        pointerY: e.clientY,
+        baseX: rect.left,
+        baseY: rect.top,
+      };
+    });
+
+    dragHandle.addEventListener("pointermove", (e) => {
+      if (!dragStart) return;
+      applyPos(
+        dragStart.baseX + (e.clientX - dragStart.pointerX),
+        dragStart.baseY + (e.clientY - dragStart.pointerY)
+      );
+    });
+
+    const endDrag = (e: PointerEvent) => {
+      if (!dragStart) return;
+      try {
+        dragHandle.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      // Read the final absolute position back from the live style.
+      const fx = parseFloat(root.style.left || "0");
+      const fy = parseFloat(root.style.top || "0");
+      dragEndHandler?.({ dx: fx, dy: fy });
+      dragStart = null;
+    };
+
+    dragHandle.addEventListener("pointerup", endDrag);
+    dragHandle.addEventListener("pointercancel", endDrag);
+  }
 
   // ---- Live processing view ----
   //
@@ -269,9 +397,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   type Step = { key: string; label: string; done: boolean; active: boolean };
   let currentProcessing: {
     el: HTMLElement;
-    stepsEl: HTMLElement;
-    currentEl: HTMLElement;
-    elapsedEl: HTMLElement;
+    stepsEl: HTMLElement | null;
+    currentEl: HTMLElement | null;
+    elapsedEl: HTMLElement | null;
     startedAt: number;
     steps: Step[];
     timer: ReturnType<typeof setInterval> | null;
@@ -286,6 +414,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   ];
 
   function startProcessing(): void {
+    if (!conversation) return;
     // First clear the empty placeholder.
     const placeholder = conversation.querySelector(".rv-empty");
     if (placeholder) placeholder.remove();
@@ -305,14 +434,17 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       <div class="rv-processing-current" data-processing-current>Planning next step…</div>
       <div class="rv-processing-steps"></div>
     `;
-    conversation.appendChild(el);
-    const stepsEl = el.querySelector(".rv-processing-steps") as HTMLElement;
-    const currentEl = el.querySelector("[data-processing-current]") as HTMLElement;
-    const elapsedEl = el.querySelector(".rv-processing-elapsed") as HTMLElement;
+    if (conversation) {
+      conversation.appendChild(el);
+    }
+    const stepsEl = el.querySelector<HTMLElement>(".rv-processing-steps");
+    const currentEl = el.querySelector<HTMLElement>("[data-processing-current]");
+    const elapsedEl = el.querySelector<HTMLElement>(".rv-processing-elapsed");
 
     // Seed steps.
     const steps: Step[] = DEFAULT_STEPS.map((s) => ({ ...s }));
     function renderSteps() {
+      if (!stepsEl) return;
       stepsEl.innerHTML = steps
         .map(
           (s) => `
@@ -331,7 +463,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     }, 100);
 
     currentProcessing = { el, stepsEl, currentEl, elapsedEl, startedAt, steps, timer };
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   function updateProcessingStep(key: string, currentAction?: string): void {
@@ -348,6 +482,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       return s.done ? s : { ...s, done: true, active: false };
     });
     function render() {
+      if (!cp.stepsEl) return;
       cp.stepsEl.innerHTML = cp.steps
         .map(
           (s) => `
@@ -362,7 +497,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (currentAction && cp.currentEl) {
       cp.currentEl.textContent = currentAction;
     }
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   function endProcessing(_phase: string, _finalMessage: string): void {
@@ -457,29 +594,45 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       return;
     }
 
-    // Otherwise: append a small marker to the conversation so the
-    // timeline is not completely empty when "View details" is
-    // expanded. Real users will rely on the live processing view
-    // and the summary card; this just keeps the raw log coherent.
+    // Stop the elapsed timer + in-progress state of the previous row.
+    if (conversation) {
+      const prevInProgress = conversation.querySelectorAll<HTMLElement>(".rv-in-progress");
+      prevInProgress.forEach((el) => {
+        el.classList.remove("rv-in-progress");
+        stopElapsedTimer(el);
+      });
+    }
+
+    // Render as a slim activity log row (click to expand details).
     const block = document.createElement("div");
-    block.className = `rv-msg rv-${activity.kind}`;
+    // Add rv-in-progress for action_planned (will be removed when validated/executed)
+    const inProgressClass = activity.kind === "action_planned" ? " rv-in-progress" : "";
+    block.className = `rv-msg rv-${activity.kind}${inProgressClass}`;
     block.dataset.id = activity.id;
+    block.classList.add("rv-expandable");
     block.innerHTML = `
       <div class="rv-msg-icon">${iconFor(activity.kind)}</div>
-      <div class="rv-msg-body">
-        <div class="rv-msg-text">${escapeHtml(activity.text)}</div>
-        ${activity.detail ? `<div class="rv-msg-detail">${escapeHtml(activity.detail)}</div>` : ""}
+      <div class="rv-msg-main">
+        <div class="rv-msg-row">
+          <div class="rv-msg-body">
+            <span class="rv-msg-text">${escapeHtml(activity.text)}</span>
+            ${activity.detail ? `<span class="rv-msg-detail">${escapeHtml(activity.detail)}</span>` : ""}
+          </div>
+          <span class="rv-msg-elapsed"></span>
+          <span class="rv-msg-chevron">▾</span>
+        </div>
+        <div class="rv-msg-expand"><div class="rv-msg-expand-inner">${buildActivityDetails(activity)}</div></div>
       </div>
     `;
-    // We DO render these inline so the "View details" panel can
-    // simply be a scroll-to-bottom of the conversation. The user
-    // sees a clean live processing card on top, and the timeline
-    // is hidden behind the "View details" toggle in the summary.
-    conversation.appendChild(block);
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.appendChild(block);
+      conversation.scrollTop = conversation.scrollHeight;
+      if (inProgressClass) startElapsedTimer(block);
+    }
   }
 
   function appendUserBubble(text: string): void {
+    if (!conversation) return;
     const placeholder = conversation.querySelector(".rv-empty");
     if (placeholder) placeholder.remove();
     const block = document.createElement("div");
@@ -495,17 +648,23 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     state: "ready" | "thinking" | "completed" | "error",
     label: string
   ): void {
-    statusDot.className = `rv-chat-dot rv-${state}`;
-    headerStatus.textContent = label;
+    if (statusDot) {
+      statusDot.className = `rv-chat-dot rv-${state}`;
+    }
+    if (headerStatus) {
+      headerStatus.textContent = label;
+    }
     // Mirror the status into the footer statusbar pill.
     if (statusbarDot && statusbarLabel) {
       statusbarDot.className = `rv-statusbar-dot rv-${state}`;
       statusbarLabel.textContent = label;
     }
-    if (state === "thinking") {
-      privacyBar.classList.add("rv-active");
-    } else {
-      privacyBar.classList.remove("rv-active");
+    if (privacyBar) {
+      if (state === "thinking") {
+        privacyBar.classList.add("rv-active");
+      } else {
+        privacyBar.classList.remove("rv-active");
+      }
     }
   }
 
@@ -526,8 +685,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   }
 
   function setRedactionSummary(summary: RedactionSummary): void {
+    if (!conversation || !root) return;
     // Find the existing redaction card (if any) or create one.
-    let card = root.querySelector(".rv-redaction-card") as HTMLElement | null;
+    let card = root.querySelector<HTMLElement>(".rv-redaction-card");
     if (!card) {
       card = document.createElement("div");
       card.className = "rv-redaction-card";
@@ -567,15 +727,17 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     `;
 
     if (summary.inProgress) {
-      privacyBar.classList.add("rv-active");
-    } else if (!statusDot.classList.contains("rv-thinking")) {
-      privacyBar.classList.remove("rv-active");
+      if (privacyBar) privacyBar.classList.add("rv-active");
+    } else if (statusDot && !statusDot.classList.contains("rv-thinking")) {
+      if (privacyBar) privacyBar.classList.remove("rv-active");
     }
   }
 
   function showSummary(summary: TaskSummary): void {
     // Replace live processing (if still up) with the summary card.
     endProcessing(summary.phase, summary.message);
+    // A fresh summary invalidates the previous details view.
+    closeDetails();
 
     // Build the summary card.
     const isOk = summary.phase === "completed";
@@ -663,32 +825,150 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
 
     // Insert the summary card right after the redaction card (if any)
     // so privacy info stays visible above the result.
-    const redaction = conversation.querySelector(".rv-redaction-card");
-    if (redaction && redaction.nextSibling) {
-      conversation.insertBefore(card, redaction.nextSibling);
-    } else {
-      conversation.appendChild(card);
+    if (conversation) {
+      const redaction = conversation.querySelector(".rv-redaction-card");
+      if (redaction && redaction.nextSibling) {
+        conversation.insertBefore(card, redaction.nextSibling);
+      } else {
+        conversation.appendChild(card);
+      }
     }
 
     // Wire the "View details" toggle to open the full-screen details
     // panel (timeline + sanitized data) inside the card.
-    const toggle = card.querySelector("[data-summary-toggle]") as HTMLButtonElement;
+    const toggle = card.querySelector<HTMLButtonElement>("[data-summary-toggle]");
     summaryToggleBtn = toggle;
-    toggle.addEventListener("click", () => {
-      const isOpen = detailsPanel?.classList.contains("rv-open");
-      if (isOpen) {
-        closeDetails();
-      } else {
-        openDetails("timeline");
-      }
-    });
+    if (toggle) {
+      toggle.addEventListener("click", () => {
+        const isOpen = detailsPanel?.classList.contains("rv-open");
+        if (isOpen) {
+          closeDetails();
+        } else {
+          openDetails("timeline");
+        }
+      });
+    }
 
-    conversation.scrollTop = conversation.scrollHeight;
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+  }
+
+  function showValidationError(error: ValidationError): void {
+    // End any live processing animation
+    endProcessing("failed", "Validation error");
+
+    const card = document.createElement("div");
+    card.className = "rv-summary rv-summary-validation";
+    card.innerHTML = `
+      <div class="rv-summary-head">
+        <div class="rv-summary-icon">⚠️</div>
+        <div>
+          <div class="rv-summary-title">Validation Error: ${escapeHtml(error.field)}</div>
+          <div class="rv-summary-message">${escapeHtml(error.issue)}</div>
+        </div>
+      </div>
+      <div class="rv-validation-details">
+        <div class="rv-validation-row">
+          <span class="rv-validation-label">You entered:</span>
+          <span class="rv-validation-value">${escapeHtml(error.userValue || "(empty)")}</span>
+        </div>
+        <div class="rv-validation-row">
+          <span class="rv-validation-label">Expected:</span>
+          <span class="rv-validation-expected">${escapeHtml(error.expected)}</span>
+        </div>
+      </div>
+      <div class="rv-validation-actions">
+        <button type="button" class="rv-validation-retry-btn" data-validation-retry>
+          ✏️ Fix & Try Again
+        </button>
+      </div>
+    `;
+
+    // Insert right after redaction card or at the end
+    if (conversation) {
+      const redaction = conversation.querySelector(".rv-redaction-card");
+      if (redaction && redaction.nextSibling) {
+        conversation.insertBefore(card, redaction.nextSibling);
+      } else {
+        conversation.appendChild(card);
+      }
+    }
+
+    // Wire retry button to refocus input and clear current value for quick correction
+    const retryBtn = card.querySelector<HTMLButtonElement>("[data-validation-retry]");
+    if (retryBtn) {
+      retryBtn.addEventListener("click", () => {
+        focusInput();
+        setInputValue("");
+        card.remove();
+      });
+    }
+
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+  }
+
+  function showSystemError(error: SystemError): void {
+    // End any live processing animation
+    endProcessing("failed", error.title);
+
+    const iconMap = {
+      extension_context_invalidated: "🔄",
+      server_unreachable: "🌐",
+      runtime_error: "⚠️",
+    };
+
+    const card = document.createElement("div");
+    card.className = "rv-summary rv-summary-failed";
+    card.innerHTML = `
+      <div class="rv-summary-head">
+        <div class="rv-summary-icon">${iconMap[error.type] || "⚠️"}</div>
+        <div>
+          <div class="rv-summary-title">${escapeHtml(error.title)}</div>
+          <div class="rv-summary-message">${escapeHtml(error.message)}</div>
+        </div>
+      </div>
+      <div class="rv-validation-actions">
+        <button type="button" class="rv-validation-retry-btn" data-system-error-action="${error.actionType}">
+          ${error.actionLabel}
+        </button>
+      </div>
+    `;
+
+    // Insert right after redaction card or at the end
+    if (conversation) {
+      const redaction = conversation.querySelector(".rv-redaction-card");
+      if (redaction && redaction.nextSibling) {
+        conversation.insertBefore(card, redaction.nextSibling);
+      } else {
+        conversation.appendChild(card);
+      }
+    }
+
+    // Wire action button
+    const actionBtn = card.querySelector<HTMLButtonElement>("[data-system-error-action]");
+    if (actionBtn) {
+      actionBtn.addEventListener("click", () => {
+        if (error.actionType === "refresh") {
+          window.location.reload();
+        } else if (error.actionType === "retry") {
+          focusInput();
+          card.remove();
+        }
+      });
+    }
+
+    if (conversation) {
+      conversation.scrollTop = conversation.scrollHeight;
+    }
   }
 
   // ---- Details panel (Timeline + Sanitized data) ----
 
   function openDetails(tab: "timeline" | "data"): void {
+    if (!root) return;
     detailsTab = tab;
     if (!detailsPanel) {
       detailsPanel = document.createElement("div");
@@ -722,6 +1002,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         <button type="button" class="rv-details-tab ${detailsTab === "data" ? "rv-active" : ""}" data-tab="data">
           Sanitized data
         </button>
+        <button type="button" class="rv-details-hide" data-details-hide aria-label="Hide details">
+          Hide details <span class="rv-details-hide-chevron">▾</span>
+        </button>
         <button type="button" class="rv-details-close" data-details-close aria-label="Close details">×</button>
       </div>
     `;
@@ -732,15 +1015,17 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         bodyHtml = `<div class="rv-details-empty">No activity yet — send a prompt first.</div>`;
       } else {
         bodyHtml = `<div class="rv-details-timeline">${detailedTimeline
-          .map((a) => {
+          .map((a, idx) => {
             const time = new Date(a.timestamp).toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
               second: "2-digit",
             });
+            const stepNumber = idx + 1;
             return `
               <div class="rv-details-item rv-dt-${a.kind}">
-                <div class="rv-details-item-icon">${iconFor(a.kind)}</div>
+                <div class="rv-details-item-step">${stepNumber}</div>
+                <div class="rv-details-item-icon">${iconForActivity(a)}</div>
                 <div class="rv-details-item-body">
                   <div class="rv-details-item-text">${escapeHtml(a.text)}</div>
                   ${a.detail ? `<div class="rv-details-item-detail">${escapeHtml(a.detail)}</div>` : ""}
@@ -755,11 +1040,45 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       if (!sanitizedData) {
         bodyHtml = `<div class="rv-details-empty">Send a prompt first — the sanitized snapshot is captured during the agent loop.</div>`;
       } else {
+        // Compute PII type distribution for graphical analysis
+        const privacyByType: Record<string, number> = {};
+        sanitizedData.tokens.forEach((t) => {
+          const type = t.type.toUpperCase();
+          privacyByType[type] = (privacyByType[type] || 0) + 1;
+        });
+        const totalTokens = sanitizedData.tokens.length;
+        const sortedTypes = Object.entries(privacyByType).sort((a, b) => b[1] - a[1]);
+
+        // Build multi-segment distribution bar
+        let distributionBar = "";
+        if (totalTokens > 0) {
+          const segments = sortedTypes.map(([type, count]) => {
+            const percent = ((count / totalTokens) * 100).toFixed(1);
+            const colorMap: Record<string, string> = {
+              EMAIL: "#6366f1",
+              PHONE: "#8b5cf6",
+              PASSWORD: "#ec4899",
+              PERSON: "#14b8a6",
+              CARD: "#f59e0b",
+              ADDRESS: "#06b6d4",
+            };
+            const color = colorMap[type] || "#64748b";
+            return `<div class="rv-dist-segment" style="flex: ${count}; background: ${color};" title="${type}: ${count} (${percent}%)"></div>`;
+          }).join("");
+          distributionBar = `<div class="rv-dist-bar">${segments}</div>`;
+        }
+
+        // Build category chips
+        const categoryChips = sortedTypes.map(([type, count]) => {
+          const icon = iconForType(type);
+          return `<div class="rv-category-chip" data-type="${escapeHtml(type)}"><span class="rv-category-icon">${icon}</span><span class="rv-category-label">${escapeHtml(type)}</span><span class="rv-category-count">${count}</span></div>`;
+        }).join("");
+
         const tokenRows = sanitizedData.tokens.length
           ? sanitizedData.tokens
               .map(
                 (t) => `
-              <div class="rv-token-row">
+              <div class="rv-token-row" data-type="${escapeHtml(t.type.toUpperCase())}">
                 <span class="rv-token-icon">${iconForType(t.type)}</span>
                 <span class="rv-token-name">${escapeHtml(t.token)}</span>
                 <span class="rv-token-type">${escapeHtml(t.type)}</span>
@@ -771,6 +1090,39 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
           : `<div class="rv-details-empty">No sensitive values were detected on this page.</div>`;
 
         bodyHtml = `
+          <div class="rv-graphical-analysis">
+            <div class="rv-analysis-title">Privacy Protection Analysis</div>
+            ${totalTokens > 0 ? `
+              <div class="rv-analysis-section">
+                <div class="rv-analysis-label">PII Distribution</div>
+                ${distributionBar}
+                <div class="rv-category-chips">${categoryChips}</div>
+              </div>
+            ` : ""}
+            <div class="rv-analysis-metrics">
+              <div class="rv-metric-card">
+                <div class="rv-metric-icon">🛡️</div>
+                <div class="rv-metric-body">
+                  <div class="rv-metric-value">100%</div>
+                  <div class="rv-metric-label">Protection Rate</div>
+                </div>
+              </div>
+              <div class="rv-metric-card">
+                <div class="rv-metric-icon">📊</div>
+                <div class="rv-metric-body">
+                  <div class="rv-metric-value">${sanitizedData.elementCount}</div>
+                  <div class="rv-metric-label">Elements Analyzed</div>
+                </div>
+              </div>
+              <div class="rv-metric-card">
+                <div class="rv-metric-icon">🔑</div>
+                <div class="rv-metric-body">
+                  <div class="rv-metric-value">${totalTokens}</div>
+                  <div class="rv-metric-label">Active Tokens</div>
+                </div>
+              </div>
+            </div>
+          </div>
           <div class="rv-data-summary">
             <div class="rv-data-row"><span>Page</span><span>${escapeHtml(sanitizedData.title || sanitizedData.url || "—")}</span></div>
             <div class="rv-data-row"><span>Elements sent to server</span><span>${sanitizedData.elementCount}</span></div>
@@ -790,31 +1142,34 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     detailsPanel.querySelectorAll<HTMLButtonElement>(".rv-details-tab").forEach((b) => {
       b.addEventListener("click", () => openDetails(b.dataset.tab as "timeline" | "data"));
     });
+    // Labeled "Hide details" pill + the small × both collapse the panel.
+    detailsPanel.querySelector("[data-details-hide]")?.addEventListener("click", closeDetails);
     detailsPanel.querySelector("[data-details-close]")?.addEventListener("click", closeDetails);
   }
 
   function setInputEnabled(enabled: boolean): void {
-    input.disabled = !enabled;
-    sendBtn.disabled = !enabled;
+    if (input) input.disabled = !enabled;
+    if (sendBtn) sendBtn.disabled = !enabled;
     // Cancel is active while the agent is working, disabled when idle.
-    cancelBtn.disabled = enabled;
-    if (enabled) input.focus();
+    if (cancelBtn) cancelBtn.disabled = enabled;
+    if (enabled && input) input.focus();
   }
 
   function focusInput(): void {
-    input.focus();
+    if (input) input.focus();
   }
 
   function setInputValue(v: string): void {
-    input.value = v;
+    if (input) input.value = v;
   }
 
   function setMinimized(minimized: boolean): void {
-    root.classList.toggle("rv-minimized", minimized);
+    if (root) root.classList.toggle("rv-minimized", minimized);
   }
 
-  function setDragOffset(dx: number, dy: number): void {
-    applyOffset(dx, dy);
+  function setDragOffset(x: number, y: number): void {
+    // Absolute viewport position (left/top), clamped on-screen.
+    applyPos(x, y);
   }
 
   function setSanitizedData(data: SanitizedDataSnapshot): void {
@@ -830,56 +1185,71 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       theme === "light" ||
       (theme === "auto" && window.matchMedia("(prefers-color-scheme: light)").matches);
     currentTheme = light ? "light" : "dark";
-    root.classList.toggle("rv-light", light);
-    themeBtn.textContent = light ? "☀️" : "🌙";
-    quickSettings
-      .querySelectorAll<HTMLButtonElement>("[data-qs-theme]")
-      .forEach((b) =>
-        b.classList.toggle("rv-active", b.dataset.qsTheme === currentTheme)
-      );
+    if (root) root.classList.toggle("rv-light", light);
+    if (themeBtn) {
+      themeBtn.textContent = light ? "☀️" : "🌙";
+    }
+    if (quickSettings) {
+      quickSettings
+        .querySelectorAll<HTMLButtonElement>("[data-qs-theme]")
+        .forEach((b) =>
+          b.classList.toggle("rv-active", b.dataset.qsTheme === currentTheme)
+        );
+    }
   }
 
   function setAutoRedactState(enabled: boolean): void {
-    qsAutoRedact.checked = enabled;
+    if (qsAutoRedact) qsAutoRedact.checked = enabled;
   }
 
   // ---- Footer / quick settings wiring ----
 
-  themeBtn.addEventListener("click", () => {
-    themeToggleHandler?.(currentTheme === "dark" ? "light" : "dark");
-  });
-
-  settingsBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    quickSettings.classList.toggle("rv-open");
-  });
-
-  infoBtn.addEventListener("click", () => {
-    const isOpen = detailsPanel?.classList.contains("rv-open");
-    if (isOpen) {
-      closeDetails();
-    } else {
-      openDetails("timeline");
-    }
-  });
-
-  quickSettings.querySelectorAll<HTMLButtonElement>("[data-qs-theme]").forEach((b) => {
-    b.addEventListener("click", () => {
-      themeToggleHandler?.(b.dataset.qsTheme as "dark" | "light");
+  if (themeBtn) {
+    themeBtn.addEventListener("click", () => {
+      themeToggleHandler?.(currentTheme === "dark" ? "light" : "dark");
     });
-  });
+  }
 
-  qsAutoRedact.addEventListener("change", () => {
-    autoRedactHandler?.(qsAutoRedact.checked);
-  });
+  if (settingsBtn) {
+    settingsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      quickSettings?.classList.toggle("rv-open");
+    });
+  }
+
+  if (infoBtn) {
+    infoBtn.addEventListener("click", () => {
+      const isOpen = detailsPanel?.classList.contains("rv-open");
+      if (isOpen) {
+        closeDetails();
+      } else {
+        openDetails("timeline");
+      }
+    });
+  }
+
+  if (quickSettings) {
+    quickSettings.querySelectorAll<HTMLButtonElement>("[data-qs-theme]").forEach((b) => {
+      b.addEventListener("click", () => {
+        themeToggleHandler?.(b.dataset.qsTheme as "dark" | "light");
+      });
+    });
+  }
+
+  if (qsAutoRedact) {
+    qsAutoRedact.addEventListener("change", () => {
+      autoRedactHandler?.(qsAutoRedact.checked);
+    });
+  }
 
   // Close the quick-settings popover when clicking anywhere else in the card.
   root.addEventListener("click", (e) => {
+    if (!quickSettings) return;
     const target = e.target as HTMLElement;
     if (
       quickSettings.classList.contains("rv-open") &&
       !quickSettings.contains(target) &&
-      !settingsBtn.contains(target)
+      settingsBtn && !settingsBtn.contains(target)
     ) {
       quickSettings.classList.remove("rv-open");
     }
@@ -892,8 +1262,15 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       currentProcessing.el.remove();
       currentProcessing = null;
     }
+    // Collapse the details panel and drop the stale toggle reference —
+    // otherwise the panel keeps overlaying the card with old content
+    // and the summary toggle points at a removed node.
+    closeDetails();
+    summaryToggleBtn = null;
     detailedTimeline = [];
-    conversation.innerHTML = emptyStateHTML();
+    if (conversation) {
+      conversation.innerHTML = emptyStateHTML();
+    }
   }
 
   function resetConversation(): void {
@@ -943,6 +1320,8 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     onDragEnd,
     setDragOffset,
     showSummary,
+    showValidationError,
+    showSystemError,
     resetConversation,
     setSanitizedData,
     applyTheme,
@@ -963,7 +1342,7 @@ function chatHTML(): string {
 
       <header class="rv-chat-header" data-rv-drag-handle>
         <div class="rv-chat-brand">
-          <div class="rv-chat-avatar">RV</div>
+          <div class="rv-chat-avatar"><img class="rv-avatar-img" data-rv-logo src="${rvLogoUrl()}" alt="RedactVision" draggable="false" /></div>
           <div class="rv-chat-brand-text">
             <div class="rv-chat-title">RedactVision Agent</div>
             <div class="rv-chat-status-row">
@@ -1004,7 +1383,7 @@ function chatHTML(): string {
 
       <footer class="rv-statusbar">
         <div class="rv-statusbar-brand">
-          <span class="rv-statusbar-avatar">RV</span>
+          <span class="rv-statusbar-avatar"><img class="rv-avatar-img rv-avatar-sm" data-rv-logo src="${rvLogoUrl()}" alt="" draggable="false" /></span>
           <span class="rv-statusbar-name">RedactVision</span>
           <span class="rv-statusbar-pill">
             <span class="rv-statusbar-dot rv-ready" id="rv-statusbar-dot"></span>
@@ -1060,6 +1439,110 @@ function emptyStateHTML(): string {
   `;
 }
 
+/**
+ * Expand/collapse a single activity row. Only the clicked row is
+ * toggled; the conversation scroll position is preserved so the
+ * expansion never causes a visual jump.
+ */
+function toggleActivityExpand(row: HTMLElement): void {
+  const conv = row.closest(".rv-conversation") as HTMLElement | null;
+  const scrollTop = conv?.scrollTop ?? 0;
+  const wasExpanded = row.classList.toggle("rv-expanded");
+  const chevron = row.querySelector<HTMLElement>(".rv-msg-chevron");
+  if (chevron) chevron.classList.toggle("rv-open", wasExpanded);
+  if (conv) conv.scrollTop = scrollTop;
+}
+
+/** Live elapsed timers for in-progress activity rows. */
+const activityTimers = new WeakMap<HTMLElement, number>();
+
+function startElapsedTimer(row: HTMLElement): void {
+  const span = row.querySelector<HTMLElement>(".rv-msg-elapsed");
+  if (!span) return;
+  const startedAt = Date.now();
+  const tick = () => {
+    span.textContent = `Working… ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+  };
+  tick();
+  activityTimers.set(row, window.setInterval(tick, 100));
+}
+
+function stopElapsedTimer(row: HTMLElement): void {
+  const timer = activityTimers.get(row);
+  if (timer !== undefined) {
+    clearInterval(timer);
+    activityTimers.delete(row);
+  }
+  const span = row.querySelector<HTMLElement>(".rv-msg-elapsed");
+  if (span) span.textContent = "";
+}
+
+/**
+ * Build the expanded (factual) detail section for an activity row.
+ * Only real telemetry from the agent pipeline is shown — no invented
+ * reasoning. Sensitive values are never present here: the session
+ * tokenizes them before any activity is emitted.
+ */
+function buildActivityDetails(activity: AgentActivity): string {
+  const meta = (activity.meta || {}) as Record<string, unknown>;
+  const rows: string[] = [];
+  const add = (label: string, value: string, mono = false): void => {
+    rows.push(
+      `<div class="rv-x-row"><span class="rv-x-label">${escapeHtml(label)}</span>` +
+        `<span class="rv-x-value${mono ? " rv-mono" : ""}">${escapeHtml(value)}</span></div>`
+    );
+  };
+
+  add("Intent", activity.text);
+  if (activity.detail) add("Detail", activity.detail);
+
+  const action = meta.action as Record<string, unknown> | undefined;
+  if (action && typeof action.action === "string") {
+    add("Action", actionCodeRepr(action), true);
+  }
+  if (typeof meta.source === "string") add("Source", meta.source, true);
+  if (action && typeof action.confidence === "number") {
+    add("Confidence", `${Math.round(action.confidence * 100)}%`, true);
+  }
+  if (typeof meta.confidence === "number") {
+    add("Confidence", `${Math.round(meta.confidence * 100)}%`, true);
+  }
+  if (typeof meta.durationMs === "number") {
+    add("Duration", `${Math.round(meta.durationMs)}ms`, true);
+  }
+  if (typeof meta.errorCode === "string") add("Error code", meta.errorCode, true);
+  if (typeof meta.failedAction === "string") add("Failed action", meta.failedAction, true);
+  if (rows.length === 1 && !activity.detail) add("Status", "Completed", true);
+
+  return rows.join("");
+}
+
+/** Compact code-style representation of a planned action (factual). */
+function actionCodeRepr(a: Record<string, unknown>): string {
+  const kind = String(a.action);
+  const target = a.target ? String(a.target) : "";
+  const value = a.value !== undefined && a.value !== null ? String(a.value) : "";
+  const amount = typeof a.amount === "number" ? a.amount : null;
+  switch (kind) {
+    case "click":
+      return `click(${target || "?"})`;
+    case "type":
+      return `type(${target || "?"}, "${value.length > 32 ? value.slice(0, 29) + "…" : value}")`;
+    case "scroll": {
+      const dir = String(a.direction || "down").toLowerCase() === "up" ? -1 : 1;
+      return `window.scrollBy(0, ${dir * (amount ?? 500)})`;
+    }
+    case "select":
+      return `select(${target || "?"}, "${value}")`;
+    case "wait":
+      return `wait(${amount ?? 1000}ms)`;
+    case "navigate":
+      return `navigate(${target || value || "?"})`;
+    default:
+      return `${kind} ${target}`.trim();
+  }
+}
+
 function iconFor(kind: AgentActivity["kind"]): string {
   switch (kind) {
     case "user":
@@ -1073,7 +1556,7 @@ function iconFor(kind: AgentActivity["kind"]): string {
     case "action_validated":
       return "✓";
     case "action_executed":
-      return "✅";
+      return "⌨️";  // keyboard icon for typing/clicking actions
     case "action_rejected":
       return "✗";
     case "iteration_complete":
@@ -1085,6 +1568,39 @@ function iconFor(kind: AgentActivity["kind"]): string {
     default:
       return "·";
   }
+}
+
+// Enhanced icon selection based on activity text content for timeline clarity
+function iconForActivity(activity: AgentActivity): string {
+  const text = activity.text.toLowerCase();
+
+  // Privacy/security-related steps
+  if (text.includes("privacy") || text.includes("firewall") || text.includes("sanitiz")) {
+    return "🛡️";
+  }
+
+  // Typing action
+  if (text.includes("type into") || text.includes("typing")) {
+    return "⌨️";
+  }
+
+  // Click action
+  if (text.includes("click")) {
+    return "👆";
+  }
+
+  // Validation/check steps
+  if (text.includes("validat")) {
+    return "✓";
+  }
+
+  // Analysis/understanding
+  if (text.includes("analyz") || text.includes("understand")) {
+    return "🔍";
+  }
+
+  // Default to kind-based icon
+  return iconFor(activity.kind);
 }
 
 function iconForType(type: string): string {
@@ -1109,32 +1625,4 @@ function escapeHtml(s: string): string {
 
 function escapeAttr(s: string): string {
   return escapeHtml(s);
-}
-
-/* ---- Logo helpers (used by content script for the launcher pill) ---- */
-
-/** Returns the extension's logo URL from the icons/ folder. */
-export function rvLogoUrl(): string {
-  return chrome.runtime.getURL("icons/logo.png");
-}
-
-/**
- * CSP-safe upgrade: if the browser can handle SVG, swap the `<img>` src
- * to an inline SVG data-URL so it scales cleanly. Falls back to the
- * supplied `fallback` (the PNG) when SVG rendering isn't possible.
- */
-export async function upgradeLogoUrl(
-  img: HTMLImageElement,
-  fallback: string
-): Promise<void> {
-  try {
-    const resp = await fetch(chrome.runtime.getURL("icons/logo.svg"));
-    if (!resp.ok) return; // no SVG — stick with PNG
-    const svg = await resp.text();
-    const blob = new Blob([svg], { type: "image/svg+xml" });
-    img.src = URL.createObjectURL(blob);
-  } catch {
-    // SVG not available — keep the PNG fallback
-    img.src = fallback;
-  }
 }

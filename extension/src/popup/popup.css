@@ -88,6 +88,16 @@ body {
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(91, 107, 255, 0.4);
   flex-shrink: 0;
+  overflow: hidden;
+}
+.rv-dash-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 .rv-dash-title {
   font-size: 13px;

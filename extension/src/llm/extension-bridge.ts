@@ -72,11 +72,39 @@ export function isInExtensionContext(): boolean {
  */
 export async function pingServer(serverUrl: string): Promise<PingResult> {
   if (isInExtensionContext()) {
-    const resp = await chrome.runtime.sendMessage({
-      type: "RV_PING_SERVER",
-      serverUrl,
-    });
-    return resp as PingResult;
+    try {
+      // Check if extension context is still valid
+      if (!chrome.runtime?.id) {
+        return {
+          ok: false,
+          status: 0,
+          body: { code: "extension_context_invalidated" },
+          error: "Extension context invalidated",
+        };
+      }
+
+      const resp = await chrome.runtime.sendMessage({
+        type: "RV_PING_SERVER",
+        serverUrl,
+      });
+      return resp as PingResult;
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (errMsg.includes("Extension context invalidated") || errMsg.includes("message port closed")) {
+        return {
+          ok: false,
+          status: 0,
+          body: { code: "extension_context_invalidated" },
+          error: "Extension context invalidated",
+        };
+      }
+      return {
+        ok: false,
+        status: 0,
+        body: null,
+        error: errMsg,
+      };
+    }
   }
   return pingServerDirect(serverUrl);
 }
@@ -89,11 +117,62 @@ export async function planViaServer(
   req: PlanBridgeRequest
 ): Promise<PlanBridgeResult> {
   if (isInExtensionContext()) {
-    const resp = await chrome.runtime.sendMessage({
-      type: "RV_PLAN_ACTION",
-      ...req,
-    });
-    return resp as PlanBridgeResult;
+    try {
+      // Check if extension context is still valid before calling
+      if (!chrome.runtime?.id) {
+        return {
+          ok: false,
+          status: 0,
+          body: {
+            action: null,
+            source: "error",
+            provider: null,
+            model: null,
+            code: "extension_context_invalidated",
+            message: "Extension context invalidated — page needs refresh",
+          },
+          error: "Extension context invalidated",
+        };
+      }
+
+      const resp = await chrome.runtime.sendMessage({
+        type: "RV_PLAN_ACTION",
+        ...req,
+      });
+      return resp as PlanBridgeResult;
+    } catch (e) {
+      // Catch "Extension context invalidated" errors
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (errMsg.includes("Extension context invalidated") || errMsg.includes("message port closed")) {
+        return {
+          ok: false,
+          status: 0,
+          body: {
+            action: null,
+            source: "error",
+            provider: null,
+            model: null,
+            code: "extension_context_invalidated",
+            message: "Extension context invalidated — page needs refresh",
+          },
+          error: "Extension context invalidated",
+        };
+      }
+      // Other runtime errors
+      return {
+        ok: false,
+        status: 0,
+        body: {
+          action: null,
+          source: "error",
+          provider: null,
+          model: null,
+          code: "runtime_error",
+          message: errMsg,
+        },
+        error: errMsg,
+      };
+    }
   }
   return planViaServerDirect(req);
 }

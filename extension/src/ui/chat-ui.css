@@ -49,7 +49,7 @@
 
 .rv-chat {
   position: fixed;
-  bottom: 90px; /* sit above the launcher pill */
+  bottom: 84px; /* sit above the 56px launcher pill */
   right: 20px;
   width: 380px;
   height: 580px;
@@ -72,18 +72,67 @@
   font-size: 13px;
   -webkit-font-smoothing: antialiased;
   z-index: 2147483646;
-  transform: translate(var(--rv-drag-x, 0px), var(--rv-drag-y, 0px));
-  transition: box-shadow 0.2s ease, transform 0.15s ease;
-  animation: rv-card-in 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: box-shadow 0.2s ease;
 }
 
 .rv-chat:hover {
   box-shadow: var(--rv-shadow-card-hover);
 }
 
-@keyframes rv-card-in {
-  from { opacity: 0; transform: translate(var(--rv-drag-x, 0px), calc(20px + var(--rv-drag-y, 0px))); }
-  to   { opacity: 1; transform: translate(var(--rv-drag-x, 0px), var(--rv-drag-y, 0px)); }
+/* ============================================================
+ *  LAUNCHER → PANEL MORPH TRANSITION
+ *  One continuous object: the floating pill grows into the chat
+ *  card (open) and the card shrinks back into the pill (close).
+ *  Transform/opacity/border-radius only — GPU-friendly.
+ * ============================================================ */
+.rv-chat.rv-morph {
+  animation: none;
+  will-change: transform, opacity;
+  transition:
+    transform 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.32s ease,
+    border-radius 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.45s ease;
+}
+/* Start state: pill-sized circle at the launcher's exact position
+   (position comes from inline left/top + transform-origin). */
+.rv-chat.rv-morph.rv-morph-start {
+  transform: scale(0.09);
+  opacity: 0;
+  border-radius: 50%;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+/* Panel content fades/slides in slightly after the shape settles. */
+.rv-chat.rv-morph > * {
+  transition: opacity 0.26s ease 0.16s, transform 0.3s cubic-bezier(0.22, 1, 0.36, 1) 0.16s;
+}
+.rv-chat.rv-morph.rv-morph-start > * {
+  opacity: 0;
+  transform: translateY(8px);
+  transition-delay: 0s;
+}
+
+/* Reduced motion: skip the scale morph — quick fade only. */
+@media (prefers-reduced-motion: reduce) {
+  .rv-chat.rv-morph {
+    transition: opacity 0.12s ease;
+  }
+  .rv-chat.rv-morph.rv-morph-start {
+    transform: none;
+    border-radius: var(--rv-radius);
+    opacity: 0;
+  }
+  .rv-chat.rv-morph > * {
+    transition: none;
+  }
+}
+
+/* Small viewports: panel must always fit, no horizontal overflow. */
+@media (max-width: 480px) {
+  .rv-chat {
+    width: min(380px, calc(100vw - 16px));
+    height: min(580px, calc(100vh - 72px));
+  }
 }
 
 /* When the launcher anchors the card to a specific position, the
@@ -154,19 +203,31 @@
 }
 
 .rv-chat-avatar {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.5px;
   color: white;
   background: linear-gradient(135deg, #5b6bff 0%, #22d3a0 100%);
-  border-radius: 9px;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.14), 0 2px 10px rgba(91, 107, 255, 0.45);
+  border-radius: 12px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16), 0 2px 12px rgba(91, 107, 255, 0.5);
   flex-shrink: 0;
+  overflow: hidden;
+}
+/* Brand logo inside the header avatar (SIH.jpeg). */
+.rv-chat-avatar .rv-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
+  user-select: none;
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 
 .rv-chat-title {
@@ -277,7 +338,7 @@
   color: var(--rv-text-dim);
   font-size: 14px;
   line-height: 1;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .rv-icon-btn:hover {
@@ -295,12 +356,13 @@
 .rv-conversation {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 14px 8px;
+  padding: 10px 10px 6px 18px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
   scroll-behavior: smooth;
   min-height: 0; /* allow flex shrink */
+  position: relative;
 }
 
 .rv-conversation::-webkit-scrollbar {
@@ -351,58 +413,219 @@
   border: 1px solid var(--rv-border);
 }
 
-/* ---------- Activity blocks ---------- */
-.rv-msg {
+/* ---------- Activity log — slim live-agent feed ---------- */
+/* Connected timeline container */
+.rv-activity-feed {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: var(--rv-radius-sm);
-  font-size: 12.5px;
-  line-height: 1.5;
-  animation: rv-msg-in 0.22s ease-out;
-}
-@keyframes rv-msg-in {
-  from { opacity: 0; transform: translateY(3px); }
-  to   { opacity: 1; transform: translateY(0); }
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0;
 }
 
+/* Each activity row — slim, compact, with timeline node */
+.rv-msg {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 0 6px 6px 0;
+  font-size: 12px;
+  line-height: 1.3;
+  position: relative;
+  animation: rv-msg-in 0.18s ease-out;
+  border-left: 2px solid transparent;
+  background: rgba(15, 23, 42, 0.25);
+  transition: background 0.2s ease;
+}
+.rv-msg:hover {
+  background: rgba(15, 23, 42, 0.40);
+}
+@keyframes rv-msg-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Timeline node dot */
+.rv-msg::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rv-text-mute);
+  border: 1.5px solid var(--rv-bg);
+  z-index: 1;
+}
+
+/* Connecting line between rows */
+.rv-msg::after {
+  content: '';
+  position: absolute;
+  left: -2.5px;
+  top: -2px;
+  width: 1px;
+  height: calc(100% + 2px);
+  background: rgba(91, 107, 255, 0.12);
+}
+.rv-msg:first-child::after {
+  top: 50%;
+  height: calc(100% - 50% + 2px);
+}
+.rv-msg:last-child::after {
+  height: calc(50% + 2px);
+}
+
+/* Icon — smaller, tighter */
 .rv-msg-icon {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  border-radius: 6px;
+  font-size: 10px;
+  border-radius: 4px;
   background: rgba(91, 107, 255, 0.10);
   border: 1px solid var(--rv-border);
 }
 .rv-msg-body {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .rv-msg-text {
   color: var(--rv-text);
   word-wrap: break-word;
+  font-weight: 500;
 }
 .rv-msg-detail {
   color: var(--rv-text-dim);
-  font-size: 11.5px;
-  margin-top: 3px;
-  word-wrap: break-word;
+  font-size: 10.5px;
+  font-family: var(--rv-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* USER — right-aligned indigo pill */
+/* Expandable activity row layout (click → factual detail section) */
+.rv-msg-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.rv-msg-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rv-msg.rv-expandable {
+  cursor: pointer !important;
+  user-select: none;
+}
+.rv-msg-chevron {
+  flex-shrink: 0;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--rv-text-mute);
+  transition: transform 0.2s ease;
+}
+.rv-msg-chevron.rv-open {
+  transform: rotate(180deg);
+}
+.rv-msg-elapsed {
+  flex-shrink: 0;
+  font-family: var(--rv-mono);
+  font-size: 9.5px;
+  color: var(--rv-accent);
+  letter-spacing: 0.2px;
+}
+/* Smooth height animation for the expanded detail (no layout jump) */
+.rv-msg-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.22s ease;
+}
+.rv-msg-expand-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+.rv-msg.rv-expanded .rv-msg-expand {
+  grid-template-rows: 1fr;
+}
+.rv-msg.rv-expanded {
+  background: rgba(15, 23, 42, 0.55);
+}
+.rv-x-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0 0 22px;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+.rv-x-row:first-child {
+  padding-top: 6px;
+}
+.rv-x-label {
+  flex-shrink: 0;
+  width: 66px;
+  color: var(--rv-text-mute);
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.5px;
+  padding-top: 1.5px;
+}
+.rv-x-value {
+  color: var(--rv-text-dim);
+  min-width: 0;
+  word-break: break-word;
+}
+.rv-x-value.rv-mono {
+  font-family: var(--rv-mono);
+  font-size: 10px;
+}
+/* Subtle "actively working" pulse on the icon while a row is in-progress */
+.rv-msg.rv-in-progress .rv-msg-icon {
+  animation: rv-icon-pulse 1.2s ease-in-out infinite;
+}
+@keyframes rv-icon-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+/* Elapsed span only carries content while in progress */
+.rv-msg:not(.rv-in-progress) .rv-msg-elapsed {
+  color: var(--rv-text-mute);
+}
+
+/* In-progress pulse animation */
+.rv-msg.rv-in-progress {
+  animation: rv-msg-in 0.18s ease-out, rv-pulse 1.4s ease-in-out infinite;
+}
+@keyframes rv-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* USER — right-aligned indigo pill (keep as-is, not part of feed) */
 .rv-msg.rv-user {
   align-self: flex-end;
   max-width: 85%;
   background: linear-gradient(135deg, rgba(91, 107, 255, 0.30), rgba(91, 107, 255, 0.18));
   border: 1px solid rgba(91, 107, 255, 0.45);
+  border-left: 1px solid rgba(91, 107, 255, 0.45);
   padding: 7px 12px;
   border-radius: 14px 14px 4px 14px;
   box-shadow: 0 2px 8px rgba(91, 107, 255, 0.15);
+}
+.rv-msg.rv-user::before,
+.rv-msg.rv-user::after {
+  display: none;
 }
 .rv-msg.rv-user .rv-msg-bubble {
   color: white;
@@ -410,68 +633,82 @@
   letter-spacing: -0.05px;
 }
 
-/* STAGE */
+/* STAGE — neutral gray */
 .rv-msg.rv-stage {
-  background: rgba(148, 163, 184, 0.10);
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-left-color: rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.06);
+}
+.rv-msg.rv-stage::before {
+  background: rgba(148, 163, 184, 0.6);
 }
 .rv-msg.rv-stage .rv-msg-icon {
   background: rgba(148, 163, 184, 0.10);
   color: var(--rv-text-dim);
-  animation: rv-spin 1.6s linear infinite;
-  border-color: transparent;
-}
-@keyframes rv-spin {
-  to { transform: rotate(360deg); }
 }
 
-/* LLM THINKING */
+/* LLM THINKING — purple */
 .rv-msg.rv-llm_thinking {
-  background: rgba(168, 85, 247, 0.08);
-  border: 1px solid rgba(168, 85, 247, 0.20);
+  border-left-color: rgba(168, 85, 247, 0.4);
+  background: rgba(168, 85, 247, 0.06);
+}
+.rv-msg.rv-llm_thinking::before {
+  background: rgba(168, 85, 247, 0.7);
 }
 .rv-msg.rv-llm_thinking .rv-msg-icon {
   background: rgba(168, 85, 247, 0.22);
   color: #d8b4fe;
   border-color: rgba(168, 85, 247, 0.3);
-  animation: rv-blink 1.2s ease-in-out infinite;
 }
 
-/* ACTION PLANNED */
+/* ACTION PLANNED — blue */
 .rv-msg.rv-action_planned {
-  background: rgba(91, 107, 255, 0.10);
-  border: 1px solid var(--rv-border-strong);
+  border-left-color: rgba(91, 107, 255, 0.5);
+  background: rgba(91, 107, 255, 0.08);
+}
+.rv-msg.rv-action_planned::before {
+  background: var(--rv-accent);
 }
 .rv-msg.rv-action_planned .rv-msg-icon {
   background: rgba(91, 107, 255, 0.25);
   color: #c7d2fe;
 }
 
-/* VALIDATED */
+/* VALIDATED — green */
 .rv-msg.rv-action_validated {
+  border-left-color: rgba(34, 211, 160, 0.4);
   background: rgba(34, 211, 160, 0.06);
-  border: 1px solid rgba(34, 211, 160, 0.20);
+}
+.rv-msg.rv-action_validated::before {
+  background: var(--rv-privacy);
 }
 .rv-msg.rv-action_validated .rv-msg-icon {
   background: rgba(34, 211, 160, 0.20);
   color: #6ee7b7;
 }
 
-/* EXECUTED */
+/* EXECUTED — green brighter */
 .rv-msg.rv-action_executed {
-  background: rgba(34, 211, 160, 0.12);
-  border: 1px solid rgba(34, 211, 160, 0.35);
+  border-left-color: rgba(34, 211, 160, 0.6);
+  background: rgba(34, 211, 160, 0.10);
+}
+.rv-msg.rv-action_executed::before {
+  background: var(--rv-privacy);
+  box-shadow: 0 0 4px rgba(34, 211, 160, 0.5);
 }
 .rv-msg.rv-action_executed .rv-msg-icon {
   background: rgba(34, 211, 160, 0.25);
   color: #6ee7b7;
 }
 
-/* REJECTED / ERROR */
+/* REJECTED / ERROR — red */
 .rv-msg.rv-action_rejected,
 .rv-msg.rv-error {
-  background: var(--rv-warn-soft);
-  border: 1px solid rgba(255, 90, 122, 0.30);
+  border-left-color: rgba(255, 90, 122, 0.5);
+  background: rgba(255, 90, 122, 0.08);
+}
+.rv-msg.rv-action_rejected::before,
+.rv-msg.rv-error::before {
+  background: var(--rv-warn);
 }
 .rv-msg.rv-action_rejected .rv-msg-icon,
 .rv-msg.rv-error .rv-msg-icon {
@@ -480,16 +717,22 @@
   border-color: rgba(255, 90, 122, 0.3);
 }
 
-/* INFO */
+/* INFO — neutral */
 .rv-msg.rv-info {
-  background: rgba(148, 163, 184, 0.10);
-  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-left-color: rgba(148, 163, 184, 0.3);
+  background: rgba(148, 163, 184, 0.05);
+}
+.rv-msg.rv-info::before {
+  background: rgba(148, 163, 184, 0.5);
 }
 
-/* ITERATION COMPLETE */
+/* ITERATION COMPLETE — green */
 .rv-msg.rv-iteration_complete {
-  background: rgba(34, 211, 160, 0.10);
-  border: 1px solid rgba(34, 211, 160, 0.35);
+  border-left-color: rgba(34, 211, 160, 0.5);
+  background: rgba(34, 211, 160, 0.08);
+}
+.rv-msg.rv-iteration_complete::before {
+  background: var(--rv-privacy);
 }
 .rv-msg.rv-iteration_complete .rv-msg-icon {
   background: rgba(34, 211, 160, 0.25);
@@ -510,7 +753,7 @@
   padding: 7px 10px;
   font-size: 11px;
   color: var(--rv-text-dim);
-  cursor: pointer;
+  cursor: pointer !important;
   user-select: none;
   background: rgba(91, 107, 255, 0.04);
   transition: background 0.15s;
@@ -788,6 +1031,12 @@
     linear-gradient(160deg, rgba(245, 158, 11, 0.12), rgba(91, 107, 255, 0.05) 55%, rgba(10, 15, 32, 0.45));
   border-color: rgba(245, 158, 11, 0.45);
 }
+.rv-summary.rv-summary-validation {
+  background:
+    radial-gradient(400px 140px at 100% 0%, rgba(251, 146, 60, 0.18), transparent 70%),
+    linear-gradient(160deg, rgba(251, 146, 60, 0.14), rgba(245, 158, 11, 0.08) 55%, rgba(10, 15, 32, 0.45));
+  border-color: rgba(251, 146, 60, 0.50);
+}
 .rv-summary-head {
   display: flex;
   align-items: center;
@@ -816,6 +1065,11 @@
   background: linear-gradient(135deg, rgba(245, 158, 11, 0.40), rgba(245, 158, 11, 0.15));
   color: #fcd34d;
   box-shadow: 0 4px 14px rgba(245, 158, 11, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.rv-summary-validation .rv-summary-icon {
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.45), rgba(251, 146, 60, 0.18));
+  color: #fdba74;
+  box-shadow: 0 4px 14px rgba(251, 146, 60, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 .rv-summary-title {
   font-size: 14.5px;
@@ -867,8 +1121,71 @@
   font-size: 11px;
   color: #c7d2fe;
   font-weight: 600;
-  cursor: pointer;
+  /* !important: the card is injected into the host page (no shadow
+     root), so host CSS like `button { cursor: default }` can win —
+     force the hand pointer on every interactive control. */
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+/* Validation error details */
+.rv-validation-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: rgba(10, 15, 32, 0.60);
+  border: 1px solid rgba(251, 146, 60, 0.25);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.rv-validation-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 11.5px;
+}
+.rv-validation-label {
+  color: var(--rv-text-dim);
+  font-weight: 600;
+  min-width: 80px;
+  flex-shrink: 0;
+}
+.rv-validation-value {
+  color: #fca5a5;
+  font-family: var(--rv-mono);
+  background: rgba(239, 68, 68, 0.12);
+  padding: 2px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+.rv-validation-expected {
+  color: #86efac;
+  font-weight: 500;
+}
+.rv-validation-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+.rv-validation-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.35), rgba(245, 158, 11, 0.20));
+  border: 1px solid rgba(251, 146, 60, 0.55);
+  color: #ffedd5;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer !important;
+  transition: all 0.15s ease;
+}
+.rv-validation-retry-btn:hover {
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.50), rgba(245, 158, 11, 0.35));
+  border-color: rgba(251, 146, 60, 0.80);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(251, 146, 60, 0.30);
 }
 .rv-summary-toggle:hover {
   background: rgba(91, 107, 255, 0.26);
@@ -890,6 +1207,19 @@
   background:
     radial-gradient(400px 140px at 100% 0%, rgba(245, 158, 11, 0.14), transparent 70%),
     linear-gradient(160deg, rgba(245, 158, 11, 0.10), rgba(91, 107, 255, 0.04) 55%, rgba(255, 255, 255, 0.65));
+}
+.rv-chat.rv-light .rv-summary.rv-summary-validation {
+  background:
+    radial-gradient(400px 140px at 100% 0%, rgba(251, 146, 60, 0.16), transparent 70%),
+    linear-gradient(160deg, rgba(251, 146, 60, 0.12), rgba(245, 158, 11, 0.05) 55%, rgba(255, 255, 255, 0.70));
+  border-color: rgba(251, 146, 60, 0.60);
+}
+.rv-chat.rv-light .rv-validation-details {
+  background: rgba(255, 255, 255, 0.75);
+}
+.rv-chat.rv-light .rv-validation-retry-btn {
+  color: #9a3412;
+  background: rgba(251, 146, 60, 0.20);
 }
 .rv-chat.rv-light .rv-summary-stat {
   background: rgba(255, 255, 255, 0.80);
@@ -934,9 +1264,11 @@
   font-family: inherit;
   font-size: 13px;
   line-height: 1.4;
-  max-height: 100px;
+  min-height: 38px;
+  max-height: 160px;
+  overflow-y: hidden;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s, height 0.12s ease;
 }
 .rv-input:focus {
   border-color: var(--rv-border-strong);
@@ -962,7 +1294,7 @@
   color: white;
   border: none;
   border-radius: 10px;
-  cursor: pointer;
+  cursor: pointer !important;
   font-size: 14px;
   transition: transform 0.1s, box-shadow 0.15s, opacity 0.15s;
   flex-shrink: 0;
@@ -987,7 +1319,7 @@
   font-size: 11.5px;
   font-weight: 600;
   font-family: inherit;
-  cursor: pointer;
+  cursor: pointer !important;
   flex-shrink: 0;
   transition: background 0.15s, color 0.15s, opacity 0.15s;
 }
@@ -1107,6 +1439,18 @@
   background: linear-gradient(135deg, #5b6bff 0%, #22d3a0 100%);
   border-radius: 6px;
   flex-shrink: 0;
+  overflow: hidden;
+}
+/* Brand logo inside the footer statusbar avatar. */
+.rv-statusbar-avatar .rv-avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
+  user-select: none;
+  pointer-events: none;
+  -webkit-user-drag: none;
 }
 .rv-statusbar-name {
   font-size: 12px;
@@ -1166,7 +1510,7 @@
   border: 1px solid var(--rv-border);
   border-radius: 9px;
   font-size: 13px;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, border-color 0.15s, transform 0.1s;
 }
 .rv-sb-btn:hover {
@@ -1253,7 +1597,7 @@
   font-weight: 600;
   font-family: inherit;
   color: var(--rv-text-dim);
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s;
 }
 .rv-qs-seg button.rv-active {
@@ -1262,7 +1606,7 @@
   box-shadow: 0 1px 6px rgba(91, 107, 255, 0.4);
 }
 .rv-qs-toggle-row {
-  cursor: pointer;
+  cursor: pointer !important;
 }
 .rv-qs-toggle-row input {
   display: none;
@@ -1343,7 +1687,7 @@
   font-weight: 600;
   font-family: inherit;
   color: #c7d2fe;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, border-color 0.15s, transform 0.1s, color 0.15s;
 }
 .rv-chip-suggest:hover {
@@ -1415,29 +1759,55 @@
 .rv-chat.rv-light .rv-input:focus {
   background: rgba(255, 255, 255, 0.85);
 }
+/* Light theme activity feed adjustments */
+.rv-chat.rv-light .rv-msg {
+  background: rgba(255, 255, 255, 0.40);
+}
+.rv-chat.rv-light .rv-msg::after {
+  background: rgba(91, 107, 255, 0.15);
+}
+.rv-chat.rv-light .rv-msg:hover {
+  background: rgba(255, 255, 255, 0.60);
+}
 .rv-chat.rv-light .rv-msg.rv-user {
   background: linear-gradient(135deg, rgba(91, 107, 255, 0.85), rgba(91, 107, 255, 0.70));
   border-color: rgba(91, 107, 255, 0.6);
+  border-left-color: rgba(91, 107, 255, 0.6);
 }
 .rv-chat.rv-light .rv-msg.rv-user .rv-msg-bubble {
   color: white;
 }
 .rv-chat.rv-light .rv-msg.rv-stage,
 .rv-chat.rv-light .rv-msg.rv-info {
-  background: rgba(91, 107, 255, 0.06);
-  border-color: rgba(91, 107, 255, 0.15);
+  border-left-color: rgba(100, 116, 139, 0.4);
+}
+.rv-chat.rv-light .rv-msg.rv-stage::before,
+.rv-chat.rv-light .rv-msg.rv-info::before {
+  background: rgba(100, 116, 139, 0.5);
 }
 .rv-chat.rv-light .rv-msg.rv-action_planned {
-  background: rgba(91, 107, 255, 0.10);
+  border-left-color: rgba(91, 107, 255, 0.6);
+}
+.rv-chat.rv-light .rv-msg.rv-action_planned::before {
+  background: var(--rv-accent);
 }
 .rv-chat.rv-light .rv-msg.rv-action_validated,
 .rv-chat.rv-light .rv-msg.rv-action_executed,
 .rv-chat.rv-light .rv-msg.rv-iteration_complete {
-  background: rgba(34, 211, 160, 0.12);
+  border-left-color: rgba(34, 211, 160, 0.5);
+}
+.rv-chat.rv-light .rv-msg.rv-action_validated::before,
+.rv-chat.rv-light .rv-msg.rv-action_executed::before,
+.rv-chat.rv-light .rv-msg.rv-iteration_complete::before {
+  background: var(--rv-privacy);
 }
 .rv-chat.rv-light .rv-msg.rv-action_rejected,
 .rv-chat.rv-light .rv-msg.rv-error {
-  background: rgba(255, 90, 122, 0.10);
+  border-left-color: rgba(255, 90, 122, 0.5);
+}
+.rv-chat.rv-light .rv-msg.rv-action_rejected::before,
+.rv-chat.rv-light .rv-msg.rv-error::before {
+  background: var(--rv-warn);
 }
 .rv-chat.rv-light .rv-redaction-card {
   background: linear-gradient(135deg, rgba(34, 211, 160, 0.12), rgba(91, 107, 255, 0.06));
@@ -1576,7 +1946,7 @@
   font-weight: 600;
   font-family: inherit;
   color: var(--rv-text-dim);
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s;
 }
 .rv-details-tab:hover {
@@ -1600,12 +1970,49 @@
   border-radius: 6px;
   color: var(--rv-text-dim);
   font-size: 15px;
-  cursor: pointer;
+  cursor: pointer !important;
   transition: background 0.15s, color 0.15s;
 }
 .rv-details-close:hover {
   background: var(--rv-warn-soft);
   color: var(--rv-warn);
+}
+
+/* Labeled "Hide details" pill — the summary toggle underneath the
+   overlay can never be clicked, so the open panel carries its own
+   clearly-labeled control to collapse back to the summary card. */
+.rv-details-hide {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(91, 107, 255, 0.16);
+  border: 1px solid rgba(91, 107, 255, 0.40);
+  border-radius: 8px;
+  padding: 5px 11px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  color: #c7d2fe;
+  cursor: pointer !important;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.rv-details-hide:hover {
+  background: rgba(91, 107, 255, 0.30);
+  border-color: rgba(91, 107, 255, 0.60);
+  color: white;
+}
+.rv-details-hide .rv-details-hide-chevron {
+  font-size: 9px;
+  transition: transform 0.2s;
+}
+.rv-details-hide:hover .rv-details-hide-chevron {
+  transform: rotate(180deg);
+}
+/* When the hide pill sits in the tab bar it owns the right edge;
+   the × stays right beside it instead of pushing it away. */
+.rv-details-tabs .rv-details-hide + .rv-details-close {
+  margin-left: 0;
 }
 
 .rv-details-body {
@@ -1630,51 +2037,101 @@
   line-height: 1.6;
 }
 
-/* Timeline tab */
+/* Timeline tab (Stepper / Flow View) */
 .rv-details-timeline {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
+  position: relative;
+  padding-left: 2px;
+}
+.rv-details-timeline::before {
+  content: "";
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: 14px;
+  width: 2px;
+  background: linear-gradient(
+    to bottom,
+    rgba(91, 107, 255, 0.45) 0%,
+    rgba(34, 211, 160, 0.40) 50%,
+    rgba(91, 107, 255, 0.20) 100%
+  );
+  z-index: 0;
 }
 .rv-details-item {
   display: flex;
   align-items: flex-start;
-  gap: 9px;
-  padding: 8px 10px;
+  gap: 10px;
+  padding: 10px 12px;
   border-radius: var(--rv-radius-sm);
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid rgba(91, 107, 255, 0.10);
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(91, 107, 255, 0.15);
   animation: rv-msg-in 0.2s ease-out;
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.rv-details-item:hover {
+  border-color: rgba(91, 107, 255, 0.35);
+  transform: translateX(2px);
 }
 .rv-chat.rv-light .rv-details-item {
-  background: rgba(255, 255, 255, 0.60);
-  border-color: rgba(91, 107, 255, 0.15);
+  background: rgba(255, 255, 255, 0.75);
+  border-color: rgba(91, 107, 255, 0.18);
+  box-shadow: 0 2px 8px rgba(30, 41, 80, 0.08);
 }
-.rv-details-item-icon {
+.rv-details-item-step {
   flex-shrink: 0;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
-  border-radius: 6px;
-  background: rgba(91, 107, 255, 0.12);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--rv-mono);
+  color: #c7d2fe;
+  background: linear-gradient(135deg, rgba(91, 107, 255, 0.45), rgba(91, 107, 255, 0.20));
+  border: 1.5px solid rgba(91, 107, 255, 0.60);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(91, 107, 255, 0.30);
+}
+.rv-chat.rv-light .rv-details-item-step {
+  color: #3730a3;
+  background: linear-gradient(135deg, rgba(91, 107, 255, 0.25), rgba(91, 107, 255, 0.10));
+  border-color: rgba(91, 107, 255, 0.50);
+}
+.rv-details-item-icon {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  border-radius: 7px;
+  background: rgba(91, 107, 255, 0.14);
 }
 .rv-details-item-body {
   flex: 1;
   min-width: 0;
 }
 .rv-details-item-text {
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 650;
   color: var(--rv-text);
-  line-height: 1.45;
+  line-height: 1.4;
   word-wrap: break-word;
+  letter-spacing: -0.1px;
 }
 .rv-details-item-detail {
   font-size: 11px;
   color: var(--rv-text-dim);
-  margin-top: 2px;
+  margin-top: 3px;
+  line-height: 1.35;
   word-wrap: break-word;
 }
 .rv-details-item-time {
@@ -1682,12 +2139,169 @@
   font-size: 9.5px;
   font-family: var(--rv-mono);
   color: var(--rv-text-mute);
-  padding-top: 2px;
+  padding-top: 3px;
 }
 .rv-details-item.rv-dt-error .rv-details-item-icon { background: var(--rv-warn-soft); }
 .rv-details-item.rv-dt-action_executed .rv-details-item-icon,
 .rv-details-item.rv-dt-iteration_complete .rv-details-item-icon { background: var(--rv-privacy-soft); }
 .rv-details-item.rv-dt-action_rejected .rv-details-item-icon { background: var(--rv-warn-soft); }
+
+/* Sanitized data tab — Graphical analysis */
+.rv-graphical-analysis {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  background:
+    radial-gradient(300px 120px at 100% 0%, rgba(91, 107, 255, 0.16), transparent 70%),
+    linear-gradient(160deg, rgba(91, 107, 255, 0.10), rgba(34, 211, 160, 0.06) 55%, rgba(15, 23, 42, 0.55));
+  border: 1px solid rgba(91, 107, 255, 0.25);
+  border-radius: var(--rv-radius-sm);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.20), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.rv-chat.rv-light .rv-graphical-analysis {
+  background:
+    radial-gradient(300px 120px at 100% 0%, rgba(91, 107, 255, 0.12), transparent 70%),
+    linear-gradient(160deg, rgba(91, 107, 255, 0.08), rgba(34, 211, 160, 0.04) 55%, rgba(255, 255, 255, 0.75));
+  border-color: rgba(91, 107, 255, 0.25);
+  box-shadow: 0 4px 16px rgba(30, 41, 80, 0.08);
+}
+.rv-analysis-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--rv-text);
+  letter-spacing: -0.1px;
+}
+.rv-analysis-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rv-analysis-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--rv-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.rv-dist-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.60);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.rv-dist-segment {
+  height: 100%;
+  transition: opacity 0.15s;
+}
+.rv-dist-segment:hover {
+  opacity: 0.85;
+}
+.rv-category-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.rv-category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 7px;
+  background: rgba(15, 23, 42, 0.50);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid var(--rv-accent);
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-family: var(--rv-mono);
+  color: var(--rv-text);
+}
+/* Per-type colored left accent (matches the distribution bar colors) */
+.rv-category-chip[data-type="EMAIL"] { border-left-color: #6366f1; }
+.rv-category-chip[data-type="PHONE"] { border-left-color: #8b5cf6; }
+.rv-category-chip[data-type="PASSWORD"] { border-left-color: #ec4899; }
+.rv-category-chip[data-type="PERSON"] { border-left-color: #14b8a6; }
+.rv-category-chip[data-type="CARD"] { border-left-color: #f59e0b; }
+.rv-category-chip[data-type="ADDRESS"] { border-left-color: #06b6d4; }
+.rv-chat.rv-light .rv-category-chip {
+  background: rgba(255, 255, 255, 0.80);
+  border-color: rgba(91, 107, 255, 0.15);
+}
+.rv-category-icon {
+  font-size: 11px;
+}
+.rv-category-label {
+  color: var(--rv-text-dim);
+  font-weight: 500;
+}
+.rv-category-count {
+  font-weight: 700;
+  color: var(--rv-accent);
+  background: rgba(91, 107, 255, 0.15);
+  padding: 0 4px;
+  border-radius: 4px;
+}
+.rv-analysis-metrics {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--rv-border);
+  border-radius: var(--rv-radius-sm);
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.45);
+}
+.rv-chat.rv-light .rv-analysis-metrics {
+  background: rgba(255, 255, 255, 0.70);
+}
+/* Thin single-row metric strip — one cell per metric, no bulky boxes */
+.rv-metric-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.rv-metric-card + .rv-metric-card {
+  border-left: 1px solid rgba(91, 107, 255, 0.14);
+}
+.rv-chat.rv-light .rv-metric-card {
+  background: transparent;
+}
+.rv-metric-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.rv-metric-body {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.rv-metric-value {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--rv-text);
+  font-family: var(--rv-mono);
+  line-height: 1.2;
+}
+.rv-metric-label {
+  font-size: 9.5px;
+  color: var(--rv-text-dim);
+  line-height: 1.2;
+  margin-top: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* Sanitized data tab */
 .rv-data-summary {
@@ -1742,13 +2356,21 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  padding: 4px 10px 4px 8px;
   border-radius: var(--rv-radius-xs);
   background: rgba(15, 23, 42, 0.45);
   border: 1px solid rgba(34, 211, 160, 0.18);
+  border-left: 3px solid #14b8a6;
   font-family: var(--rv-mono);
   font-size: 11px;
 }
+/* Per-type colored left accent so the token list reads as a categorized feed */
+.rv-token-row[data-type="EMAIL"] { border-left-color: #6366f1; }
+.rv-token-row[data-type="PHONE"] { border-left-color: #8b5cf6; }
+.rv-token-row[data-type="PASSWORD"] { border-left-color: #ec4899; }
+.rv-token-row[data-type="PERSON"] { border-left-color: #14b8a6; }
+.rv-token-row[data-type="CARD"] { border-left-color: #f59e0b; }
+.rv-token-row[data-type="ADDRESS"] { border-left-color: #06b6d4; }
 .rv-chat.rv-light .rv-token-row {
   background: rgba(255, 255, 255, 0.60);
 }

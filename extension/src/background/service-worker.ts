@@ -43,12 +43,32 @@ chrome.runtime.onMessage.addListener(
     const tabId = sender.tab?.id;
 
     if (message.type === "RV_PING_SERVER") {
-      void handlePing(String(message.serverUrl || "")).then(sendResponse);
+      void handlePing(String(message.serverUrl || ""))
+        .then(sendResponse)
+        .catch((err) => {
+          console.error("[RedactVision] Service Worker: Ping handler error:", err);
+          sendResponse({
+            ok: false,
+            status: 0,
+            body: null,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       return true;
     }
 
     if (message.type === "RV_PLAN_ACTION") {
-      void handlePlan(message as unknown as RVPlanMessage).then(sendResponse);
+      void handlePlan(message as unknown as RVPlanMessage)
+        .then(sendResponse)
+        .catch((err) => {
+          console.error("[RedactVision] Service Worker: Plan handler error:", err);
+          sendResponse({
+            ok: false,
+            status: 0,
+            body: null,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
       return true;
     }
 

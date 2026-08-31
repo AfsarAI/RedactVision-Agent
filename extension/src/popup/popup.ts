@@ -86,13 +86,16 @@ async function saveDashboard(settings: DashboardSettings): Promise<void> {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const $ = <T extends HTMLElement>(id: string): T => {
-    const el = document.getElementById(id);
-    if (!el) throw new Error(`Missing #${id}`);
-    return el as T;
+  const $ = <T extends HTMLElement>(id: string): T | null => {
+    try {
+      const el = document.getElementById(id);
+      return el as T | null;
+    } catch {
+      return null;
+    }
   };
 
-  // Element refs
+  // Element refs - with null checks to prevent uncaught exceptions
   const activeToggle = $<HTMLInputElement>("rv-active-toggle");
   const showWidgetToggle = $<HTMLInputElement>("rv-show-widget");
   const autoRedactToggle = $<HTMLInputElement>("rv-auto-redact");
@@ -294,20 +297,24 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Helper: persist planner config + show a brief "saved" hint.
   let statusTimer: ReturnType<typeof setTimeout> | null = null;
   function setStatus(text: string, kind: "ok" | "busy" | "error" = "ok"): void {
-    statusLabel.textContent = text;
-    statusDot.className = `rv-status-dot rv-${kind}`;
+    if (statusLabel) statusLabel.textContent = text;
+    if (statusDot) {
+      statusDot.className = `rv-status-dot rv-${kind}`;
+    }
     if (statusTimer) clearTimeout(statusTimer);
     if (kind === "ok") {
       statusTimer = setTimeout(() => {
-        statusLabel.textContent = "Settings saved automatically";
-        statusDot.className = "rv-status-dot rv-ok";
+        if (statusLabel) statusLabel.textContent = "Settings saved automatically";
+        if (statusDot) {
+          statusDot.className = "rv-status-dot rv-ok";
+        }
       }, 1500);
     }
   }
 
   async function persistPlanner(): Promise<void> {
     const cfg: PlannerConfig = {
-      serverUrl: serverUrlInput.value.trim() || "http://127.0.0.1:8001",
+      serverUrl: serverUrlInput?.value.trim() || "http://127.0.0.1:8001",
       onDeviceModel: plannerConfig.onDeviceModel,
       backend: "server",
     };
