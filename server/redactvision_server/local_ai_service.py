@@ -11,27 +11,40 @@ available. It never sends raw personal values to the network.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any
-
-from pydantic import BaseModel, Field
 
 from .local_profile_service import LocalProfileAssistant, build_profile_token_map
 
 
-class LocalAIRecommendation(BaseModel):
+@dataclass
+class LocalAIRecommendation:
     selected_profile_id: str | None = None
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    confidence: float = 0.0
     reason: str = ""
-    resolved_tokens: dict[str, str] = Field(default_factory=dict)
-    suggested_fields: list[str] = Field(default_factory=list)
+    resolved_tokens: dict[str, str] = field(default_factory=dict)
+    suggested_fields: list[str] = field(default_factory=list)
+
+    def model_dump(self, *, exclude_none: bool = False) -> dict[str, Any]:
+        result = {
+            "selected_profile_id": self.selected_profile_id,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "resolved_tokens": self.resolved_tokens,
+            "suggested_fields": self.suggested_fields,
+        }
+        if exclude_none:
+            return {key: value for key, value in result.items() if value is not None}
+        return result
 
 
-class LocalAIHealth(BaseModel):
+@dataclass
+class LocalAIHealth:
     status: str = "ready"
     model: str = "local-deterministic-profile-matcher"
     local_only: bool = True
     lightweight: bool = True
-    notes: list[str] = Field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 class LocalDesktopAIService:
