@@ -32,13 +32,18 @@ function getSelector(element: Element): string {
   }
 
   const name = htmlElement.getAttribute("name");
-
   if (name) {
-    return `${element.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
+    const safeName = name.replace(/["\\]/g, "\\$&");
+    return `${element.tagName.toLowerCase()}[name="${safeName}"]`;
+  }
+
+  const ariaLabel = htmlElement.getAttribute("aria-label");
+  if (ariaLabel) {
+    const safeAria = ariaLabel.replace(/["\\]/g, "\\$&");
+    return `${element.tagName.toLowerCase()}[aria-label="${safeAria}"]`;
   }
 
   const tag = element.tagName.toLowerCase();
-
   const parent = element.parentElement;
 
   if (!parent) {
@@ -54,42 +59,62 @@ function getSelector(element: Element): string {
   }
 
   const index = siblings.indexOf(element) + 1;
-
   return `${getSelector(parent)} > ${tag}:nth-of-type(${index})`;
 }
 
 /**
- * Get the text of the <label> associated with an input element.
- * Checks: label[for], label > input, nearest label ancestor.
+ * Get the text of the <label> or question title associated with an input element.
+ * Checks: aria-labelledby (Google Forms), aria-label, label[for], container heading (.M7eMe, role=heading).
  */
 function getLabelText(el: Element): string {
   const htmlEl = el as HTMLElement;
 
-  // 1. Explicit label[for]
+  // 1. aria-labelledby (Google Forms, accessible webapps)
+  const labelledBy = htmlEl.getAttribute("aria-labelledby");
+  if (labelledBy) {
+    const textParts = labelledBy
+      .split(/\s+/)
+      .map((id) => document.getElementById(id)?.textContent?.trim())
+      .filter(Boolean);
+    if (textParts.length > 0) return textParts.join(" ").replace(/\s+/g, " ");
+  }
+
+  // 2. aria-label on the input itself
+  const aria = htmlEl.getAttribute("aria-label");
+  if (aria && aria.trim()) return aria.trim().replace(/\s+/g, " ");
+
+  // 3. Explicit label[for]
   if (htmlEl.id) {
     const labelFor = document.querySelector(`label[for="${CSS.escape(htmlEl.id)}"]`);
     if (labelFor) return (labelFor.textContent || "").trim().replace(/\s+/g, " ");
   }
 
-  // 2. Label wrapping the input
-  const parent = htmlEl.closest("label");
-  if (parent) return (parent.textContent || "").trim().replace(/\s+/g, " ");
+  // 4. Label wrapping the input
+  const parentLabel = htmlEl.closest("label");
+  if (parentLabel) return (parentLabel.textContent || "").trim().replace(/\s+/g, " ");
 
-  // 3. Nearest form-group / fieldset container with a label
-  const formGroup = htmlEl.closest("div, section, fieldset, td, li");
-  if (formGroup) {
-    const groupLabel = formGroup.querySelector("label");
-    if (groupLabel) return (groupLabel.textContent || "").trim().replace(/\s+/g, " ");
-    // Also capture preceding sibling text (e.g. label before input in a flex row)
-    const prev = formGroup.previousElementSibling;
-    if (prev && prev.tagName === "LABEL") {
-      return (prev.textContent || "").trim().replace(/\s+/g, " ");
+  // 5. Container question title (Google Forms, Typeform, Microsoft Forms, Workday, Greenhouse)
+  const container = htmlEl.closest(
+    "[role='listitem'], .Qr7Oae, .geS5nc, [jsmodel], [data-item-id], .form-group, fieldset, tr, li, div[class*='question'], div[class*='item'], div[class*='field']"
+  );
+  if (container) {
+    const heading = container.querySelector(
+      "[role='heading'], .M7eMe, [class*='Title'], [class*='title'], [class*='Header'], [class*='header'], [class*='label'], [class*='Label']"
+    );
+    if (heading) {
+      const hText = (heading.textContent || "").trim().replace(/\s+/g, " ");
+      if (hText) return hText;
     }
+
+    const groupLabel = container.querySelector("label");
+    if (groupLabel) return (groupLabel.textContent || "").trim().replace(/\s+/g, " ");
   }
 
-  // 4. aria-label on the input itself
-  const aria = htmlEl.getAttribute("aria-label");
-  if (aria) return aria.trim().replace(/\s+/g, " ");
+  // 6. Preceding sibling label or text
+  const prev = htmlEl.previousElementSibling;
+  if (prev && (prev.tagName === "LABEL" || /^H[1-6]$/.test(prev.tagName))) {
+    return (prev.textContent || "").trim().replace(/\s+/g, " ");
+  }
 
   return "";
 }

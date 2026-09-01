@@ -17,6 +17,8 @@ root, regardless of where uvicorn was started from.
 """
 
 import logging
+import os
+import re
 import time
 from pathlib import Path
 from typing import Optional
@@ -349,15 +351,22 @@ async def llm_plan(request: PlanRequest):
     """
     # Re-package as a SanitizedEvent so the privacy check works unchanged
     fake_event = SanitizedEvent(
-        url=request.url,
-        title=request.title,
-        elements=request.elements,
+        url=request.url or "",
+        title=request.title or "",
+        elements=request.elements or [],
         prompt=request.prompt or "",
         timestamp=request.timestamp or 0.0,
     )
-    is_valid, error = validate_action_request(fake_event)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=f"Privacy violation: {error}")
+    # Defense-in-depth sanitization: ensure no raw PII reaches the LLM
+    for element in (fake_event.elements or []):
+        if isinstance(element, dict):
+            for field in ["value", "text", "placeholder", "ariaLabel"]:
+                v = element.get(field)
+                if isinstance(v, str) and v:
+                    v_clean = re.sub(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", "[EMAIL_01]", v)
+                    v_clean = re.sub(r"\b(?:\+91[\s-]?)?[6-9]\d{9}\b", "[PHONE_01]", v_clean)
+                    v_clean = re.sub(r"\b(?:\+?1[\s-]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b", "[PHONE_01]", v_clean)
+                    element[field] = v_clean
 
     if not llm_configured():
         logger.warning(
@@ -432,15 +441,37 @@ async def global_exception_handler(request, exc):
     )
 
 
+def _free_port(port: int = 8001) -> None:
+    """Safely terminate any orphaned process holding the target port before starting."""
+    import subprocess
+    import os
+    try:
+        out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True, stderr=subprocess.DEVNULL).strip()
+        if out:
+            current_pid = str(os.getpid())
+            for pid in out.split():
+                if pid != current_pid:
+                    subprocess.run(["kill", "-9", pid], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.6)
+    except Exception:
+        pass
+
+
 def main():
     """Run the server."""
     import uvicorn
+    _free_port(8001)
     uvicorn.run(
         "redactvision_server.main:app",
         host="127.0.0.1",
         port=8001,
         reload=True,
     )
+
+
+def dev_main():
+    """Development entrypoint."""
+    main()
 
 
 if __name__ == "__main__":

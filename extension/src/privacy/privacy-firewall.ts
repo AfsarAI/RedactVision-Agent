@@ -191,10 +191,13 @@ export class PrivacyFirewall {
             )
           : null,
 
-      /** Pass label through unsanitized — it is NOT a sensitive value,
-       *  it is the field descriptor used by the local LLM to understand
-       *  what data the field expects. */
-      label: element.label,
+      label: element.label
+        ? this.sanitizeText(
+            element.label,
+            element,
+            "text"
+          )
+        : "",
 
       selector: element.selector
     };

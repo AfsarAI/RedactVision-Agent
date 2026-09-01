@@ -517,7 +517,7 @@ function isTypeTarget(el: Element | null): el is TypeTarget {
   return (
     el instanceof HTMLInputElement ||
     el instanceof HTMLTextAreaElement ||
-    (el instanceof HTMLElement && el.isContentEditable)
+    (el instanceof HTMLElement && (el.isContentEditable || el.getAttribute("contenteditable") === "true" || el.getAttribute("role") === "textbox"))
   );
 }
 

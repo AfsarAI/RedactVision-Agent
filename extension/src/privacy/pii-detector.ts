@@ -81,13 +81,16 @@ function detectPhones(
     contextText.includes("tel") ||
     contextText.includes("contact");
 
-  // If text strictly matches a standalone phone format, or context hints it
-  const regex = /(?:\+91[\s-]?)?[6-9]\d{9}\b/g;
+  const phoneRegexes = [
+    /\b(?:\+91[\s-]?)?[6-9]\d{9}\b/g,
+    /\b(?:\+?1[\s-]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
+    /\b(?:\+\d{1,3}[-.\s]?)?\d{10,14}\b/g,
+    /\b\d{10}\b/g,
+  ];
 
-  for (const match of text.matchAll(regex)) {
-    if (match.index !== undefined) {
-      // If it looks like a phone field, or the text is solely/mostly the phone number
-      if (looksLikePhoneField || text.trim() === match[0].trim()) {
+  for (const regex of phoneRegexes) {
+    for (const match of text.matchAll(regex)) {
+      if (match.index !== undefined) {
         matches.push(
           createMatch(
             "PHONE",

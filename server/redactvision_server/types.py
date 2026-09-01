@@ -52,20 +52,20 @@ class SanitizedEvent(BaseModel):
     - semantic tokens (e.g. [EMAIL_01])
     - safe text (labels, static content)
     """
-    url: str
-    title: str
-    elements: list = Field(..., description="Sanitized DOM elements with tokens")
+    url: Optional[str] = ""
+    title: Optional[str] = ""
+    elements: list = Field(default_factory=list, description="Sanitized DOM elements with tokens")
     prompt: Optional[str] = Field(None, description="User's natural language task")
-    timestamp: float = Field(..., description="Unix timestamp of capture")
+    timestamp: Optional[float] = Field(0.0, description="Unix timestamp of capture")
 
 
 class PlanRequest(BaseModel):
     """Body for POST /llm/plan — same shape as SanitizedEvent plus optional history."""
-    url: str
-    title: str
-    elements: list
-    prompt: Optional[str] = None
-    history: Optional[list] = None
+    url: Optional[str] = ""
+    title: Optional[str] = ""
+    elements: Optional[list] = Field(default_factory=list)
+    prompt: Optional[str] = ""
+    history: Optional[list] = Field(default_factory=list)
     timestamp: Optional[float] = None
 
 

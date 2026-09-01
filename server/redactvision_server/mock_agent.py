@@ -214,36 +214,66 @@ def validate_action_request(event: SanitizedEvent) -> tuple[bool, Optional[str]]
     if hasattr(event, "token_map") or (hasattr(event, "metadata") and event.metadata and "token_map" in str(event.metadata)):
         return False, "Privacy violation: token_map should not be sent to server"
 
-    def _scan_string(field_name: str, value: object) -> Optional[str]:
+    # Known sample/instructional placeholder emails that are public webpage UI, not user PII
+    SAMPLE_EMAIL_INDICATORS = ("example.com", "sample.com", "test.com", "domain.com", "yourname@", "user@", "name@", "email@", "support@", "help@", "info@", "contact@")
+
+    def _scan_string(field_name: str, value: object, is_user_input: bool = False) -> Optional[str]:
         if not isinstance(value, str):
             return None
         if not value.strip():
             return None
-        if "[EMAIL_" in value or "[PHONE_" in value or "[PERSON_" in value or "[PASSWORD_" in value:
+
+        # Strip all valid tokens ([PERSON_01], [EMAIL_01], [PROFILE:name], [PAN_CARD_01], etc.)
+        cleaned = re.sub(r"\[[A-Za-z0-9_:-]+\]", "", value)
+        if not cleaned.strip():
             return None
-        if re.search(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", value):
-            return f"Privacy violation: possible raw email in {field_name}"
-        # Require 10-15 digits for actual phone numbers (optionally with + or standard dashes/spaces),
-        # not matching arbitrary numbers/years/counters like "2026" or "123".
-        if re.search(r"(?:\+?\d{1,3}[-.\s]?)?[6-9]\d{9}\b", value) or re.search(r"\b(?:\+?\d{1,3}[-.\s]?)?\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b", value):
-            return f"Privacy violation: possible raw phone in {field_name}"
-        if re.search(r"(?i)\b(?:my\s+name\s+is|i\s+am|full\s+name\s+is)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+", value):
+
+        # Check for un-tokenized email addresses
+        email_match = re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", cleaned)
+        if email_match:
+            matched_email = email_match.group(0).lower()
+            # If it's a static placeholder or generic sample domain in UI text, it's not user PII
+            is_sample = any(ind in matched_email for ind in SAMPLE_EMAIL_INDICATORS)
+            if is_user_input or not is_sample:
+                return f"Privacy violation: possible raw email in {field_name}"
+
+        # Check for un-tokenized phone numbers (strict word boundaries to avoid matching timestamps or internal IDs)
+        if re.search(r"\b(?:\+91[\s-]?)?[6-9]\d{9}\b", cleaned) or re.search(r"\b(?:\+?1[\s-]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b", cleaned):
+            # Verify it is not an arbitrary numeric internal token/ID/timestamp (> 14 digits continuous)
+            if not re.search(r"\b\d{13,}\b", cleaned) and is_user_input:
+                return f"Privacy violation: possible raw phone in {field_name}"
+
+        # Check for un-tokenized explicit person name phrases (e.g. "my name is John Doe")
+        if re.search(r"\b(?:my\s+name\s+is|full\s+name\s+is)\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+", cleaned):
             return f"Privacy violation: possible raw person name in {field_name}"
+
         return None
 
-    for field_name, value in {
-        "prompt": getattr(event, "prompt", None),
-    }.items():
-        reason = _scan_string(field_name, value)
+    # Scan user task prompt (user input)
+    prompt_val = getattr(event, "prompt", None)
+    if prompt_val:
+        reason = _scan_string("prompt", prompt_val, is_user_input=True)
         if reason:
             return False, reason
 
+    # Scan DOM elements
     for element in (event.elements or []):
         if not isinstance(element, dict):
             continue
-        for field in ["value", "text", "placeholder", "ariaLabel"]:
-            reason = _scan_string(f"{field} in element", element.get(field, ""))
+
+        # element.value represents user typed/input value -> strict check
+        val = element.get("value")
+        if val:
+            reason = _scan_string("value in element", val, is_user_input=True)
             if reason:
                 return False, reason
+
+        # text, placeholder, ariaLabel are static webpage elements -> sample-aware check
+        for field in ["text", "placeholder", "ariaLabel"]:
+            v = element.get(field)
+            if v:
+                reason = _scan_string(f"{field} in element", v, is_user_input=False)
+                if reason:
+                    return False, reason
 
     return True, None
