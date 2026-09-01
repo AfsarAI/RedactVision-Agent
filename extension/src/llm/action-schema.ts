@@ -19,6 +19,8 @@ export type LLMActionType =
   | "select"
   | "wait"
   | "navigate"
+  | "open_tab"
+  | "fanout"
   | "done";
 
 /**
@@ -98,7 +100,7 @@ export function validateLLMAction(raw: unknown): { ok: true; action: LLMPlannedA
 
   // action
   const action = a.action as string;
-  const allowed: LLMActionType[] = ["click", "type", "scroll", "select", "wait", "navigate", "done"];
+  const allowed: LLMActionType[] = ["click", "type", "scroll", "select", "wait", "navigate", "open_tab", "fanout", "done"];
   if (!allowed.includes(action as LLMActionType)) {
     return { ok: false, reason: `Invalid action: ${action}` };
   }

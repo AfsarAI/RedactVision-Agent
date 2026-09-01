@@ -347,12 +347,12 @@ def validate_action_shape(action: Any) -> dict:
     if not isinstance(action, dict):
         raise ValueError("LLM action is not an object")
 
-    allowed = {"click", "type", "scroll", "select", "wait", "navigate", "done"}
+    allowed = {"click", "type", "scroll", "select", "wait", "navigate", "open_tab", "fanout", "done"}
     a = action.get("action")
     if a not in allowed:
         raise ValueError(f"Invalid action: {a}")
 
-    if a in ("click", "type", "select") and not isinstance(action.get("target"), str):
+    if a in ("click", "type", "select", "navigate", "open_tab") and not isinstance(action.get("target"), str):
         raise ValueError(f"{a} requires target")
 
     if a == "type" and not isinstance(action.get("value"), str):

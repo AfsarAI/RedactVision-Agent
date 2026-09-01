@@ -42,6 +42,8 @@ import {
   upsertLocalProfile,
 } from "../privacy/profile-store";
 import { perceivePage } from "../perception/perception-pipeline";
+import { SubagentOrchestrator } from "./subagent-orchestrator";
+import type { FanOutPlan, SubagentProgressEvent } from "./subagent-types";
 
 const DEFAULT_MAX_ITERATIONS = 8;
 
@@ -120,6 +122,7 @@ export class AgentSession {
   private maxIterations: number;
   private lastSanitized: SanitizedPageDOM | null = null;
   private sessionProfile: LocalProfileValues | null = null; // Extracted from user prompts
+  private subagentOrchestrator: SubagentOrchestrator;
 
   /**
    * When the executor needs user input (AskUserInfo), the loop pauses
@@ -146,6 +149,16 @@ export class AgentSession {
         onDeviceModel: "onnx-community/Qwen2.5-0.5B-Instruct",
       }
     );
+    this.subagentOrchestrator = new SubagentOrchestrator({
+      onSubagentEvent: (event: SubagentProgressEvent) => {
+        this.push({
+          kind: "stage",
+          text: event.actionText || `Subagent ${event.status}`,
+          detail: event.detail,
+          meta: { subagentId: event.subagentId, status: event.status },
+        });
+      },
+    });
     this.maxIterations = DEFAULT_MAX_ITERATIONS;
   }
 
@@ -386,6 +399,33 @@ export class AgentSession {
 
     // Echo user message (tokenized form — visible proof of redaction)
     this.push({ kind: "user", text: prompt });
+
+    // ── Fan-Out Subagent Check ───────────────────────────────────────
+    const fanOutPlan = this.subagentOrchestrator.decomposePrompt(rawPrompt);
+    if (fanOutPlan.isFanOut && fanOutPlan.subagents.length > 1) {
+      this.push({
+        kind: "stage",
+        text: `Fanning out ${fanOutPlan.subagents.length} subagents`,
+        detail: `Spawning parallel subagents: ${fanOutPlan.subagents.map((s) => s.label).join(", ")}`,
+      });
+
+      const outcome = await this.subagentOrchestrator.executeFanOut(fanOutPlan);
+
+      this.push({
+        kind: "iteration_complete",
+        text: `Fan-Out completed (${outcome.completedCount}/${outcome.totalSubagents} succeeded)`,
+        detail: outcome.synthesizedReport,
+      });
+
+      return {
+        phase: outcome.failedCount === 0 ? "completed" : "failed",
+        iterations: 1,
+        actionsPlanned: outcome.totalSubagents,
+        actionsExecuted: outcome.completedCount,
+        durationMs: outcome.durationMs,
+        reason: outcome.synthesizedReport,
+      };
+    }
 
     // Per-prompt state.
     const promptActionHistory: Array<{

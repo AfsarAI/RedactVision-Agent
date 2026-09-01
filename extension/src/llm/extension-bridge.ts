@@ -14,6 +14,13 @@
  * `fetch()` so the same code works everywhere.
  */
 
+import {
+  isExtensionContextValid,
+  safeSendMessage,
+  safeAgentFetch,
+  showContextRecoveryBanner,
+} from "../diagnostic/diagnostic-protocol";
+
 export interface PingResult {
   ok: boolean;
   status: number;
@@ -73,8 +80,8 @@ export function isInExtensionContext(): boolean {
 export async function pingServer(serverUrl: string): Promise<PingResult> {
   if (isInExtensionContext()) {
     try {
-      // Check if extension context is still valid
-      if (!chrome.runtime?.id) {
+      if (!isExtensionContextValid()) {
+        showContextRecoveryBanner();
         return {
           ok: false,
           status: 0,
@@ -83,14 +90,15 @@ export async function pingServer(serverUrl: string): Promise<PingResult> {
         };
       }
 
-      const resp = await chrome.runtime.sendMessage({
-        type: "RV_PING_SERVER",
-        serverUrl,
-      });
-      return resp as PingResult;
+      const resp = await safeSendMessage<PingResult>(
+        { type: "RV_PING_SERVER", serverUrl },
+        3
+      );
+      return resp;
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.includes("Extension context invalidated") || errMsg.includes("message port closed")) {
+      if (errMsg.includes("context invalidated") || errMsg.includes("port closed")) {
+        showContextRecoveryBanner();
         return {
           ok: false,
           status: 0,
@@ -118,8 +126,8 @@ export async function planViaServer(
 ): Promise<PlanBridgeResult> {
   if (isInExtensionContext()) {
     try {
-      // Check if extension context is still valid before calling
-      if (!chrome.runtime?.id) {
+      if (!isExtensionContextValid()) {
+        showContextRecoveryBanner();
         return {
           ok: false,
           status: 0,
@@ -135,15 +143,15 @@ export async function planViaServer(
         };
       }
 
-      const resp = await chrome.runtime.sendMessage({
-        type: "RV_PLAN_ACTION",
-        ...req,
-      });
-      return resp as PlanBridgeResult;
+      const resp = await safeSendMessage<PlanBridgeResult>(
+        { type: "RV_PLAN_ACTION", ...req },
+        3
+      );
+      return resp;
     } catch (e) {
-      // Catch "Extension context invalidated" errors
       const errMsg = e instanceof Error ? e.message : String(e);
-      if (errMsg.includes("Extension context invalidated") || errMsg.includes("message port closed")) {
+      if (errMsg.includes("context invalidated") || errMsg.includes("port closed")) {
+        showContextRecoveryBanner();
         return {
           ok: false,
           status: 0,
@@ -158,7 +166,6 @@ export async function planViaServer(
           error: "Extension context invalidated",
         };
       }
-      // Other runtime errors
       return {
         ok: false,
         status: 0,
@@ -179,8 +186,13 @@ export async function planViaServer(
 
 export async function captureVisibleTabViaBackground(): Promise<ScreenshotBridgeResult> {
   if (isInExtensionContext()) {
-    const resp = await chrome.runtime.sendMessage({ type: "RV_CAPTURE_VISIBLE_TAB" });
-    return resp as ScreenshotBridgeResult;
+    try {
+      const resp = await safeSendMessage<ScreenshotBridgeResult>({ type: "RV_CAPTURE_VISIBLE_TAB" }, 2);
+      return resp;
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      return { ok: false, dataUrl: null, width: 0, height: 0, error: errMsg };
+    }
   }
   return { ok: false, dataUrl: null, width: 0, height: 0, error: "Not in extension context" };
 }
@@ -190,6 +202,7 @@ export async function captureVisibleTabViaBackground(): Promise<ScreenshotBridge
 async function pingServerDirect(serverUrl: string): Promise<PingResult> {
   try {
     const resp = await fetch(`${serverUrl}/llm/health`);
+    if (!resp) throw new Error("No response returned from server");
     const body = await resp.json().catch(() => ({}));
     return { ok: resp.ok, status: resp.status, body };
   } catch (e) {
@@ -218,8 +231,17 @@ async function planViaServerDirect(
         timestamp: Date.now(),
       }),
     });
+
+    if (!resp) {
+      return {
+        ok: false,
+        status: 0,
+        body: null,
+        error: "Server returned an undefined response object",
+      };
+    }
+
     if (!resp.ok) {
-      // Try to read the error body (e.g. llm_not_configured).
       let body: PlanBridgeResult["body"] = null;
       try {
         const errJson = (await resp.json()) as {

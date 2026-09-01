@@ -108,6 +108,33 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
+    if (message.type === "RV_OPEN_TAB") {
+      const url = String(message.url || "about:blank");
+      const active = Boolean(message.active ?? false);
+      void handleOpenTab(url, active).then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "RV_NAVIGATE_TAB") {
+      const targetTabId = Number(message.tabId) || tabId || 0;
+      const url = String(message.url || "");
+      void handleNavigateTab(targetTabId, url).then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "RV_CLOSE_TAB") {
+      const targetTabId = Number(message.tabId) || 0;
+      void handleCloseTab(targetTabId).then(sendResponse);
+      return true;
+    }
+
+    if (message.type === "RV_RUN_SUBAGENT_TAB") {
+      const targetTabId = Number(message.tabId) || 0;
+      const subagentPrompt = String(message.prompt || "");
+      void handleRunSubagentOnTab(targetTabId, subagentPrompt).then(sendResponse);
+      return true;
+    }
+
     return false;
   }
 );
@@ -447,6 +474,102 @@ async function handleVisualGround(
     return { ok: true, result: data };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    return { ok: false, error: msg };
+  }
+}
+
+// ===================================================================
+// Multi-Tab & Fan-Out Subagent Orchestration
+// ===================================================================
+
+/**
+ * Create a new Chrome tab and wait for page load to complete.
+ */
+async function handleOpenTab(url: string, active = false): Promise<{ ok: boolean; tabId?: number; error?: string }> {
+  try {
+    const tab = await chrome.tabs.create({ url, active });
+    if (!tab.id) return { ok: false, error: "Tab creation failed" };
+
+    // Wait for the tab to reach 'complete' status
+    await waitForTabComplete(tab.id);
+    return { ok: true, tabId: tab.id };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+}
+
+/**
+ * Navigate a specific tab to a new URL and wait for load.
+ */
+async function handleNavigateTab(tabId: number, url: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await chrome.tabs.update(tabId, { url });
+    await waitForTabComplete(tabId);
+    return { ok: true };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+}
+
+/**
+ * Close a specific tab.
+ */
+async function handleCloseTab(tabId: number): Promise<{ ok: boolean }> {
+  try {
+    if (tabId > 0) {
+      await chrome.tabs.remove(tabId);
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Wait for a tab's document to reach 'complete' status.
+ */
+function waitForTabComplete(tabId: number, timeoutMs = 25000): Promise<void> {
+  return new Promise((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const listener = (updatedTabId: number, changeInfo: { status?: string }) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") {
+        cleanup();
+        resolve();
+      }
+    };
+
+    const cleanup = () => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      if (timer) clearTimeout(timer);
+    };
+
+    timer = setTimeout(() => {
+      cleanup();
+      resolve(); // resolve on timeout rather than hanging
+    }, timeoutMs);
+
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+/**
+ * Dispatch a subagent task to an open tab's content script.
+ */
+async function handleRunSubagentOnTab(
+  tabId: number,
+  prompt: string
+): Promise<{ ok: boolean; result?: unknown; error?: string }> {
+  try {
+    const resp = await chrome.tabs.sendMessage(tabId, {
+      type: "RV_EXECUTE_SUBAGENT_PROMPT",
+      prompt,
+    });
+    return { ok: true, result: resp };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: msg };
   }
 }

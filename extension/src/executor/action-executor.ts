@@ -28,7 +28,7 @@ import {
 
 type TypeTarget = HTMLInputElement | HTMLTextAreaElement | HTMLElement;
 
-export type ActionType = "click" | "type" | "scroll" | "select" | "wait" | "navigate";
+export type ActionType = "click" | "type" | "scroll" | "select" | "wait" | "navigate" | "open_tab" | "fanout";
 
 export interface PlannedAction {
   action: ActionType;
@@ -94,7 +94,7 @@ export class ActionExecutor {
    */
   validate(action: PlannedAction): { valid: boolean; reason?: string } {
     // Schema check
-    const allowed: ActionType[] = ["click", "type", "scroll", "select", "wait", "navigate"];
+    const allowed: ActionType[] = ["click", "type", "scroll", "select", "wait", "navigate", "open_tab", "fanout"];
     if (!allowed.includes(action.action)) {
       return { valid: false, reason: `Unsupported action: ${action.action}` };
     }
@@ -162,7 +162,8 @@ export class ActionExecutor {
           message = await this.executeWait(action);
           break;
         case "navigate":
-          message = "Navigation not auto-executed (policy)";
+        case "open_tab":
+          message = await this.executeNavigate(action);
           break;
         default:
           message = `Unknown action: ${(action as PlannedAction).action}`;
@@ -506,6 +507,33 @@ export class ActionExecutor {
     const amount = action.amount ?? 500;
     await new Promise((r) => setTimeout(r, amount));
     return `Waited ${amount}ms`;
+  }
+
+  private async executeNavigate(action: PlannedAction): Promise<string> {
+    const targetUrl = action.target || action.value || "";
+    if (!targetUrl) throw new Error("Navigation requires a target URL");
+
+    const fullUrl = targetUrl.startsWith("http") ? targetUrl : `https://${targetUrl}`;
+
+    if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+      if (action.action === "open_tab") {
+        await chrome.runtime.sendMessage({
+          type: "RV_OPEN_TAB",
+          url: fullUrl,
+          active: true,
+        });
+        return `Opened new tab: ${fullUrl}`;
+      } else {
+        await chrome.runtime.sendMessage({
+          type: "RV_NAVIGATE_TAB",
+          url: fullUrl,
+        });
+        return `Navigated to ${fullUrl}`;
+      }
+    }
+
+    window.location.href = fullUrl;
+    return `Navigated to ${fullUrl}`;
   }
 }
 

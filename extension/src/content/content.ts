@@ -30,8 +30,43 @@ import {
   savePlannerConfig,
   PlannerConfig,
 } from "../llm/llm-planner";
+import {
+  isExtensionContextValid,
+  showContextRecoveryBanner,
+  saveTaskSnapshot,
+  restoreTaskSnapshot,
+  clearTaskSnapshot,
+} from "../diagnostic/diagnostic-protocol";
 
 console.log("[RedactVision] Content script initialized");
+
+// Listen for autonomous context invalidation events
+window.addEventListener("AGENT_CONTEXT_INVALIDATED", () => {
+  showContextRecoveryBanner();
+});
+
+/* ============================================================
+ *  Subagent Execution Message Listener
+ *  Allows the parent orchestrator to run subagents in this tab.
+ * ============================================================ */
+
+chrome.runtime.onMessage.addListener(
+  (message: { type?: string } & Record<string, unknown>, _sender, sendResponse) => {
+    if (!message || typeof message.type !== "string") return false;
+
+    if (message.type === "RV_EXECUTE_SUBAGENT_PROMPT") {
+      const promptText = String(message.prompt || "");
+      const session = new AgentSession();
+      session
+        .runPrompt(promptText)
+        .then((outcome) => sendResponse({ ok: true, result: outcome }))
+        .catch((err) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
+
+    return false;
+  }
+);
 
 /* ============================================================
  *  Client-side form validation
@@ -507,9 +542,29 @@ async function buildPanel(): Promise<void> {
   ui.setRedactionSummary(session.getRedactionSummary(false));
   ui.setBackend("Server"); // replaced with the active LLM provider on first plan
 
+  // Check if a preserved task snapshot exists from an interrupted session
+  const preservedSnapshot = restoreTaskSnapshot();
+  if (preservedSnapshot && preservedSnapshot.prompt) {
+    ui.setInputValue(preservedSnapshot.prompt);
+    ui.appendActivity({
+      id: `restore-${Date.now()}`,
+      kind: "info",
+      text: "Restored previous task input",
+      detail: `Prompt: "${preservedSnapshot.prompt}"`,
+      timestamp: Date.now(),
+    });
+  }
+
   ui.onSend(async (text) => {
     ui.setInputValue("");
     ui.setInputEnabled(false);
+
+    // Preserve task state snapshot in case context invalidation or refresh happens
+    saveTaskSnapshot({
+      prompt: text,
+      url: window.location.href,
+      timestamp: Date.now(),
+    });
 
     // CLIENT-SIDE VALIDATION — check form inputs BEFORE calling LLM
     const validation = validateUserInput(text);
@@ -549,6 +604,11 @@ async function buildPanel(): Promise<void> {
       const isFailed = finalPhase === "failed" || finalPhase === "max_iterations_reached" || finalPhase === "cancelled";
       const isOffline = finalPhase === "offline";
       const uiPhase = isCompleted ? "completed" : (isFailed || isOffline) ? "error" : "thinking";
+
+      // Clear preserved snapshot on successful completion
+      if (isCompleted) {
+        clearTaskSnapshot();
+      }
 
       // After the prompt, re-summarize (page state may have changed).
       ui.setRedactionSummary(session.getRedactionSummary(false));

@@ -24,6 +24,7 @@ class ActionType(str, Enum):
     SCROLL = "scroll"
     SELECT = "select"
     NAVIGATE = "navigate"
+    OPEN_TAB = "open_tab"
     WAIT = "wait"
 
 

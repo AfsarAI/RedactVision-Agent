@@ -35,8 +35,8 @@ Your job: decide the NEXT single browser action to make forward progress on the 
 
 Schema:
 {
-  "action": "click" | "type" | "scroll" | "select" | "wait" | "navigate" | "done",
-  "target": "<CSS selector>",          // required for click/type/select
+  "action": "click" | "type" | "scroll" | "select" | "wait" | "navigate" | "open_tab" | "done",
+  "target": "<CSS selector or URL>",    // required for click/type/select/navigate/open_tab
   "value": "<string>",                  // required for type, optional otherwise
   "direction": "up"|"down"|"left"|"right", // for scroll
   "amount": <number>,                   // px for scroll, ms for wait
@@ -46,6 +46,8 @@ Schema:
 }
 
 Examples of CORRECT outputs:
+
+{"action": "open_tab", "target": "https://google.com", "confidence": 0.95, "reasoning": "Open Google in a new tab.", "done": false}
 
 {"action": "type", "target": "#f1", "value": "[PROFILE:name]", "confidence": 0.95, "reasoning": "Type full name into the name field.", "done": false}
 

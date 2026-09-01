@@ -5,6 +5,7 @@
   "description": "Privacy-preserving browser agent for SIH Problem Statement 26171.",
   "permissions": [
     "activeTab",
+    "tabs",
     "scripting",
     "storage",
     "debugger"
