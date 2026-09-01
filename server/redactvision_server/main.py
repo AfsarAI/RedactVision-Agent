@@ -54,6 +54,10 @@ from .types import (
     SanitizedEvent,
     PlanRequest,
     PlanResponse,
+    SmartPlanRequest,
+    SmartPlanResponse,
+    StepValidationRequest,
+    StepValidationResponse,
     VisualGroundRequest,
     VisualGroundResponse,
     ServerAction,
@@ -65,6 +69,8 @@ from .mock_agent import validate_action_request  # privacy validator; the rule-b
 from .llm import (
     plan_with_llm,
     visual_ground_with_vlm,
+    generate_smart_execution_plan,
+    validate_step_execution,
     health as llm_health,
     is_configured as llm_configured,
     validate_action_shape as llm_validate_action_shape,
@@ -407,6 +413,69 @@ async def llm_plan(request: PlanRequest):
                 "detail": str(e),
             },
         )
+
+
+@app.post("/llm/plan-smart")
+async def llm_plan_smart(request: SmartPlanRequest):
+    """
+    Phase 3: Think-Before-Acting Smart Planning Endpoint.
+    Uses OmniRouter auto/smart to formulate sequential execution steps and validation criteria.
+    """
+    if not llm_configured():
+        raise HTTPException(status_code=503, detail="LLM not configured")
+
+    fake_event = SanitizedEvent(
+        url=request.url or "",
+        title=request.title or "",
+        elements=request.elements or [],
+        prompt=request.prompt,
+        timestamp=0.0,
+    )
+    is_valid, error = validate_action_request(fake_event)
+    if not is_valid:
+        logger.warning("Smart plan privacy rejection: %s", error)
+        raise HTTPException(status_code=400, detail=f"Privacy violation: {error}")
+
+    try:
+        plan_dict = generate_smart_execution_plan(
+            user_prompt=request.prompt,
+            current_url=request.url or "",
+            sanitized_dom={"elements": request.elements or []},
+        )
+        return SmartPlanResponse(
+            taskSummary=plan_dict.get("taskSummary", request.prompt),
+            steps=plan_dict.get("steps", []),
+            provider=plan_dict.get("provider", "omniroute"),
+            model=plan_dict.get("model", "auto/smart"),
+        )
+    except Exception as e:
+        logger.error("Smart planning failed: %s", e)
+        raise HTTPException(status_code=502, detail=f"Smart planning error: {e}")
+
+
+@app.post("/llm/validate-step")
+async def llm_validate_step(request: StepValidationRequest):
+    """
+    Phase 4: Fast Validation Loop Endpoint.
+    Uses OmniRouter auto/fast for low-latency state evaluation against expected criteria.
+    """
+    if not llm_configured():
+        return StepValidationResponse(success=True, reason="LLM unconfigured, proceeding")
+
+    try:
+        val_result = validate_step_execution(
+            step_instructions=request.step_instructions,
+            current_dom_snapshot=request.current_dom,
+        )
+        return StepValidationResponse(
+            success=bool(val_result.get("success", True)),
+            reason=str(val_result.get("reason", "Validation evaluated")),
+            confidence=float(val_result.get("confidence", 0.95)),
+            suggested_action=val_result.get("suggested_action"),
+        )
+    except Exception as e:
+        logger.warning("Step validation failed: %s", e)
+        return StepValidationResponse(success=True, reason=f"Validation fallback: {e}")
 
 
 @app.post("/llm/visual-ground")

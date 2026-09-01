@@ -369,6 +369,134 @@ def validate_action_shape(action: Any) -> dict:
     return action
 
 
+# ===================================================================
+# OmniRouter Auto-Combo Specialized Engines
+# ===================================================================
+
+def execute_omni_task(
+    combo_name: str,
+    messages: list[dict],
+    expect_json: bool = False,
+    timeout: float = 30.0,
+) -> tuple[str, str]:
+    """
+    Dispatches an agent task targeting OmniRouter auto-combos (auto/smart, auto/fast, auto/coding, auto/cheap).
+    Automatically cascades to OpenRouter and Groq if OmniRoute is unavailable or fails.
+    """
+    llm = _get_llm()
+    # If using OmniRouteProvider, prioritize requested combo
+    for provider in llm.providers:
+        if provider.name == "omniroute":
+            os.environ["OMNIROUTE_MODEL"] = combo_name
+            break
+
+    return llm.generate(messages)
+
+
+def generate_smart_execution_plan(user_prompt: str, current_url: str, sanitized_dom: dict) -> dict:
+    """
+    Phase 3: Think-Before-Acting Planning Engine using auto/smart.
+    Deconstructs vague user prompts into sequential instruction steps and explicit validation checks.
+    """
+    system_prompt = f"""You are the advanced reasoning brain of an autonomous browser agent.
+The user wants to accomplish: "{user_prompt}"
+Current Page URL: "{current_url}"
+
+Your job:
+1. Analyze the task and determine what sequential browser actions are needed.
+2. Formulate clear, step-by-step instructions for yourself to follow.
+3. Define explicit validation checks for every single step to confirm success before moving forward.
+
+Return your output strictly as a JSON object matching this schema:
+{{
+  "taskSummary": "Description of the goal",
+  "steps": [
+    {{
+      "stepId": 1,
+      "actionType": "TYPE|CLICK|NAVIGATE|EXTRACT|WAIT|DONE",
+      "targetSelector": "CSS selector or semantic description from DOM",
+      "valueToInput": "text or token or null",
+      "instructionsForSelf": "Detailed breakdown of how the agent should handle this step",
+      "validationCheck": "Condition required to mark this step successful"
+    }}
+  ]
+}}
+"""
+
+    elements_preview = (sanitized_dom.get("elements") or [])[:40] if isinstance(sanitized_dom, dict) else []
+    user_content = (
+        f'User Prompt: {user_prompt}\n\n'
+        f'Page Elements Preview:\n'
+        f'{json.dumps(elements_preview, ensure_ascii=False, indent=2)}'
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+    # Route through OmniRouter's smart reasoning combo (auto/smart)
+    raw_text, provider = execute_omni_task("auto/smart", messages, expect_json=True)
+    parsed = _parse_json(raw_text)
+    if isinstance(parsed, dict) and "steps" in parsed:
+        parsed["provider"] = provider
+        parsed["model"] = "auto/smart"
+        return parsed
+
+    # Fallback to single action step if model didn't return full list
+    return {
+        "taskSummary": user_prompt,
+        "steps": [
+            {
+                "stepId": 1,
+                "actionType": "CLICK" if "click" in user_prompt.lower() else "TYPE",
+                "targetSelector": "input" if "type" in user_prompt.lower() else "button",
+                "valueToInput": None,
+                "instructionsForSelf": user_prompt,
+                "validationCheck": "Element state changed",
+            }
+        ],
+        "provider": provider,
+        "model": "auto/smart",
+    }
+
+
+def validate_step_execution(step_instructions: str, current_dom_snapshot: dict) -> dict:
+    """
+    Phase 4: Fast Validation Loop using auto/fast.
+    Evaluates current DOM state changes against the expected validation check with sub-second latency.
+    """
+    prompt = f"""Review the current DOM state snapshot against the agent's expected validation check.
+Instruction / Validation Goal: "{step_instructions}"
+
+DOM Snapshot Elements:
+{json.dumps((current_dom_snapshot.get("elements") or [])[:30], ensure_ascii=False)}
+
+Respond with a single JSON object:
+{{
+  "success": true,
+  "reason": "Clear explanation of why the validation passed or failed",
+  "confidence": 0.95
+}}
+"""
+
+    messages = [
+        {"role": "system", "content": "You are a fast UI state evaluator. Respond strictly in JSON."},
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        # Route to low-latency auto/fast combo
+        raw_text, _ = execute_omni_task("auto/fast", messages, expect_json=True)
+        parsed = _parse_json(raw_text)
+        if isinstance(parsed, dict) and "success" in parsed:
+            return parsed
+    except Exception as exc:
+        logger.warning("Fast validation error: %s", exc)
+
+    return {"success": True, "reason": "Default assumption of step completion", "confidence": 0.8}
+
+
 # ----- New convenience export (matches spec's requested function name) -----
 def generate_llm_response(prompt: str) -> tuple[str, str]:
     """

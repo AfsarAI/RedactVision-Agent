@@ -96,6 +96,41 @@ class VisualGroundResponse(BaseModel):
     description: Optional[str] = None
 
 
+class SmartPlanStep(BaseModel):
+    stepId: int = Field(..., description="1-based index of step")
+    actionType: str = Field(..., description="TYPE, CLICK, NAVIGATE, EXTRACT, WAIT, DONE")
+    targetSelector: str = Field(..., description="CSS selector or semantic description")
+    valueToInput: Optional[str] = Field(None, description="Value or token to type")
+    instructionsForSelf: str = Field(..., description="Detailed instructions for agent")
+    validationCheck: str = Field(..., description="Condition to verify step success")
+
+
+class SmartPlanRequest(BaseModel):
+    url: Optional[str] = ""
+    title: Optional[str] = ""
+    prompt: str = Field(..., description="User's high-level task goal")
+    elements: Optional[list] = Field(default_factory=list)
+
+
+class SmartPlanResponse(BaseModel):
+    taskSummary: str
+    steps: list[dict] = Field(default_factory=list)
+    provider: Optional[str] = "omniroute"
+    model: Optional[str] = "auto/smart"
+
+
+class StepValidationRequest(BaseModel):
+    step_instructions: str = Field(..., description="Validation goal or expectation")
+    current_dom: dict = Field(default_factory=dict, description="Sanitized DOM snapshot")
+
+
+class StepValidationResponse(BaseModel):
+    success: bool
+    reason: str
+    confidence: float = 0.95
+    suggested_action: Optional[dict] = None
+
+
 class ConnectionStatus(BaseModel):
     """Server connection status update to client."""
     connected: bool
