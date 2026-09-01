@@ -44,6 +44,8 @@ import {
 import { perceivePage } from "../perception/perception-pipeline";
 import { SubagentOrchestrator } from "./subagent-orchestrator";
 import type { FanOutPlan, SubagentProgressEvent } from "./subagent-types";
+import { OptimizedAgentMemory } from "../storage/optimized-memory";
+import { SelectorCache } from "../executor/selector-cache";
 
 const DEFAULT_MAX_ITERATIONS = 8;
 
@@ -123,6 +125,7 @@ export class AgentSession {
   private lastSanitized: SanitizedPageDOM | null = null;
   private sessionProfile: LocalProfileValues | null = null; // Extracted from user prompts
   private subagentOrchestrator: SubagentOrchestrator;
+  private sessionId: string = `session-${Date.now()}`;
 
   /**
    * When the executor needs user input (AskUserInfo), the loop pauses
@@ -729,6 +732,13 @@ export class AgentSession {
 
       actionsExecuted++;
 
+      // Asynchronously append conversation turn to incremental memory cache
+      void OptimizedAgentMemory.appendTurnIncremental(this.sessionId, {
+        prompt: rawPrompt,
+        actionSummary: formatPlannedAction(action),
+        result,
+      });
+
       this.push({
         kind: "action_executed",
         text: result.message,
@@ -814,6 +824,8 @@ export class AgentSession {
   reset(): void {
     this.activities = [];
     this.actionHistory = [];
+    this.sessionId = `session-${Date.now()}`;
+    SelectorCache.clear();
     this.push({ kind: "info", text: "Session reset" });
   }
 

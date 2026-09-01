@@ -25,6 +25,7 @@ import {
   handleFallbackVisualClick,
   handleFallbackVisualType,
 } from "./visual-grounding";
+import { SelectorCache } from "./selector-cache";
 
 type TypeTarget = HTMLInputElement | HTMLTextAreaElement | HTMLElement;
 
@@ -179,8 +180,13 @@ export class ActionExecutor {
   }
 
   private async executeClick(action: PlannedAction): Promise<string> {
-    const el = document.querySelector(action.target!) || this.findSemanticTarget(action);
+    // 1. Check fast-path selector cache
+    const targetKey = action.target || "";
+    const cachedEl = SelectorCache.get(targetKey);
+    const el = cachedEl || document.querySelector(targetKey) || this.findSemanticTarget(action);
+
     if (el && el instanceof HTMLElement) {
+      if (targetKey) SelectorCache.set(targetKey, action.target!);
       await visualHumanClick(el);
 
       // If clicking a send/submit button on a chat interface, also dispatch Enter on the chat box
@@ -331,8 +337,19 @@ export class ActionExecutor {
   }
 
   private resolveTypeTarget(action: PlannedAction): TypeTarget | null {
-    const direct = action.target ? document.querySelector(action.target) : null;
+    const targetKey = action.target || "";
+
+    // 1. Check fast-path selector cache
+    if (targetKey) {
+      const cached = SelectorCache.get(targetKey);
+      if (cached && isTypeTarget(cached)) {
+        return cached;
+      }
+    }
+
+    const direct = targetKey ? document.querySelector(targetKey) : null;
     if (isTypeTarget(direct)) {
+      if (targetKey) SelectorCache.set(targetKey, targetKey);
       return direct;
     }
 
@@ -370,7 +387,12 @@ export class ActionExecutor {
       }
     }
 
-    if (bestCandidate) return bestCandidate;
+    if (bestCandidate) {
+      if (targetKey && (bestCandidate.id || bestCandidate.getAttribute("name"))) {
+        SelectorCache.set(targetKey, bestCandidate.id ? `#${CSS.escape(bestCandidate.id)}` : `[name="${bestCandidate.getAttribute('name')}"]`);
+      }
+      return bestCandidate;
+    }
 
     // Fallback: if active element is an editable field, use it
     if (document.activeElement && isTypeTarget(document.activeElement)) {
