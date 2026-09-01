@@ -113,7 +113,178 @@ class Provider(ABC):
 
 
 # ------------------------------------------------------------------
-# 1. Groq (PRIMARY)
+# 1. OmniRoute (PRIMARY - Zero-Config Auto Combos)
+# ------------------------------------------------------------------
+# OmniRoute — local OpenAI-compatible router (https://omniroute.ai).
+#
+# Pre-defined auto-combos and their specialized task fitness:
+#   - auto/smart   (Exploration & High Quality): Complex reasoning, multi-step planning, challenging workflows
+#   - auto         (Balanced Default): General questions, multi-turn chat, everyday workflows
+#   - auto/fast    (Low Latency): Quick answers, fast checks, low-latency UI decisions
+#   - auto/offline (High Capacity / Quota Preservation): Heavy automated agents, batch subagents
+#   - auto/coding  (Quality-First Coding): Writing code, DOM scripts, bug fixing
+#   - auto/cheap   (Cost-Optimized): High-volume text processing, background automation
+OMNIROUTE_AUTO_COMBOS = [
+    "auto/smart",
+    "auto",
+    "auto/fast",
+    "auto/offline",
+    "auto/coding",
+    "auto/cheap",
+]
+
+
+class OmniRouteProvider(Provider):
+    name = "omniroute"
+
+    def __init__(self) -> None:
+        self._url = os.environ.get("OMNIROUTE_URL", "http://localhost:20128/v1/chat/completions")
+
+    def available(self) -> bool:
+        # OmniRoute is available when configured URL is present
+        return bool(self._url)
+
+    def models(self) -> list[str]:
+        env_model = os.environ.get("OMNIROUTE_MODEL", "").strip()
+        if env_model:
+            return [env_model] + [m for m in OMNIROUTE_AUTO_COMBOS if m != env_model]
+        return list(OMNIROUTE_AUTO_COMBOS)
+
+    def call(self, messages: list[dict], timeout: float = 30.0) -> Tuple[str, Optional[str]]:
+        if not self.available():
+            return "", "OmniRoute URL not configured"
+
+        key = os.environ.get("OMNIROUTE_API_KEY")
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+
+        last_error = "OmniRoute all candidate auto-combos failed"
+        for model in self.models():
+            if _is_blacklisted("omniroute", model):
+                continue
+
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 1024,
+                "stream": False,  # OmniRoute streams SSE by default; we want JSON
+            }
+
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.post(self._url, json=payload, headers=headers)
+            except httpx.TimeoutException:
+                last_error = _err(408, f"OmniRoute timeout for {model}")
+                continue
+            except Exception as exc:
+                # If local daemon is not reachable on localhost:20128, fail gracefully to next provider
+                return "", f"OmniRoute network error ({model}): {exc}"
+
+            if resp.status_code == 200:
+                try:
+                    body = resp.json()
+                    msg = body["choices"][0]["message"]
+                    text = msg.get("content") or msg.get("reasoning_content") or ""
+                    if text and text.strip():
+                        # Strip markdown fences if present
+                        text = re.sub(r"^```(?:json)?\s*", "", text.strip())
+                        text = re.sub(r"\s*```$", "", text)
+                        return text, None
+                    last_error = f"OmniRoute empty content for {model}"
+                    continue
+                except (KeyError, IndexError, TypeError, ValueError) as exc:
+                    return "", f"OmniRoute unexpected response shape ({model}): {exc}"
+
+            err = _err(resp.status_code, f"OmniRoute HTTP {resp.status_code} for {model}: {resp.text[:160]}")
+            if resp.status_code in (404, 410):
+                _blacklist_model("omniroute", model)
+            last_error = err
+
+        return "", last_error
+
+
+# ------------------------------------------------------------------
+# 2. OpenRouter (SECONDARY, free-only)
+# ------------------------------------------------------------------
+OPENROUTER_PRIMARY = "openrouter/free"
+OPENROUTER_FALLBACKS = [
+    "google/gemma-4-31b-it:free",
+    "minimax/minimax-m3:free",
+]
+
+
+class OpenRouterProvider(Provider):
+    name = "openrouter"
+
+    def available(self) -> bool:
+        return bool(os.environ.get("OPENROUTER_API_KEY"))
+
+    def models(self) -> list[str]:
+        env_models = os.environ.get("OPENROUTER_FREE_MODELS", "").strip()
+        if env_models:
+            user_list = [m.strip() for m in env_models.split(",") if m.strip()]
+            return user_list
+        return [OPENROUTER_PRIMARY, *OPENROUTER_FALLBACKS]
+
+    def call(self, messages: list[dict], timeout: float = 30.0) -> Tuple[str, Optional[str]]:
+        key = os.environ.get("OPENROUTER_API_KEY")
+        if not key:
+            return "", "OpenRouter API key missing"
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        last_error = "OpenRouter all candidate models failed"
+        for model in self.models():
+            if _is_blacklisted("openrouter", model):
+                continue
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.1,
+                "max_tokens": 500,
+                "response_format": {"type": "json_object"},
+            }
+            try:
+                with httpx.Client(timeout=timeout) as client:
+                    resp = client.post(url, json=payload, headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://redactvision.local",
+                        "X-Title": "RedactVision Agent",
+                    })
+                    if resp.status_code == 400 and "response_format" in resp.text:
+                        payload.pop("response_format", None)
+                        resp = client.post(url, json=payload, headers={
+                            "Authorization": f"Bearer {key}",
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": "https://redactvision.local",
+                            "X-Title": "RedactVision Agent",
+                        })
+            except httpx.TimeoutException:
+                last_error = _err(408, f"OpenRouter timeout for {model}")
+                continue
+            except Exception as exc:
+                return "", f"OpenRouter network error: {exc}"
+
+            if resp.status_code == 200:
+                try:
+                    body = resp.json()
+                    text = body["choices"][0]["message"]["content"]
+                    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
+                    text = re.sub(r"\s*```$", "", text)
+                    return text, None
+                except (KeyError, IndexError, TypeError, ValueError) as exc:
+                    return "", f"OpenRouter unexpected response shape: {exc}"
+
+            err = _err(resp.status_code, f"OpenRouter HTTP {resp.status_code} for {model}: {resp.text[:160]}")
+            if resp.status_code in (404, 410):
+                _blacklist_model("openrouter", model)
+            last_error = err
+        return "", last_error
+
+
+# ------------------------------------------------------------------
+# 3. Groq (TERTIARY FALLBACK)
 # ------------------------------------------------------------------
 GROQ_PRIMARY = "qwen/qwen3.8-27b"
 GROQ_FALLBACKS = [
@@ -149,7 +320,6 @@ class GroqProvider(Provider):
                 "temperature": 0.1,
                 "max_tokens": 1024,
             }
-            # Only use json_object if not a safeguard model
             if not model.startswith("meta-llama/"):
                 payload["response_format"] = {"type": "json_object"}
             try:
@@ -176,10 +346,8 @@ class GroqProvider(Provider):
                 except (KeyError, IndexError, TypeError, ValueError) as exc:
                     return "", f"Groq unexpected response shape: {exc}"
 
-            # Failure path
             err = _err(resp.status_code, f"Groq HTTP {resp.status_code} for {model}: {resp.text[:160]}")
             if resp.status_code == 429:
-                # Short pause before trying next candidate model on rate limit
                 time.sleep(0.4)
             if resp.status_code in (404, 410):
                 _blacklist_model("groq", model)
@@ -188,182 +356,11 @@ class GroqProvider(Provider):
 
 
 # ------------------------------------------------------------------
-# 2. OpenRouter (SECONDARY, free-only)
-# ------------------------------------------------------------------
-# Live-tested on 2026-08-30:
-#   - Most free models (z-ai/glm-5.2:free, nvidia/nemotron-*:free) hit
-#     per-day rate limits with this key.
-#   - The `openrouter/free` router works (auto-routes to an available
-#     free model that satisfies the request).
-#   - The user has not paid for credits, so we use free models only.
-OPENROUTER_PRIMARY = "openrouter/free"
-OPENROUTER_FALLBACKS = [
-    "google/gemma-4-31b-it:free",
-    "minimax/minimax-m3:free",
-]
-
-
-class OpenRouterProvider(Provider):
-    name = "openrouter"
-
-    def available(self) -> bool:
-        return bool(os.environ.get("OPENROUTER_API_KEY"))
-
-    def models(self) -> list[str]:
-        # 1) User can pin a specific model via OPENROUTER_FREE_MODELS (comma list)
-        # 2) Else use our verified primary + fallback list
-        env_models = os.environ.get("OPENROUTER_FREE_MODELS", "").strip()
-        if env_models:
-            user_list = [m.strip() for m in env_models.split(",") if m.strip()]
-            return user_list
-        return [OPENROUTER_PRIMARY, *OPENROUTER_FALLBACKS]
-
-    def call(self, messages: list[dict], timeout: float = 30.0) -> Tuple[str, Optional[str]]:
-        key = os.environ.get("OPENROUTER_API_KEY")
-        if not key:
-            return "", "OpenRouter API key missing"
-        url = "https://openrouter.ai/api/v1/chat/completions"
-        last_error = "OpenRouter all candidate models failed"
-        for model in self.models():
-            if _is_blacklisted("openrouter", model):
-                continue
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": 0.1,
-                # Tight budget: a single action JSON needs < 200 tokens.
-                "max_tokens": 500,
-                # Force structured JSON where the model supports it. Some
-                # free models/routers reject this parameter with a 400 —
-                # in that case we retry the same model WITHOUT it rather
-                # than blacklisting the model outright.
-                "response_format": {"type": "json_object"},
-            }
-            try:
-                with httpx.Client(timeout=timeout) as client:
-                    resp = client.post(url, json=payload, headers={
-                        "Authorization": f"Bearer {key}",
-                        "Content-Type": "application/json",
-                        "HTTP-Referer": "https://redactvision.local",
-                        "X-Title": "RedactVision Agent",
-                    })
-                    if resp.status_code == 400 and "response_format" in resp.text:
-                        # Model doesn't support response_format — retry bare.
-                        payload.pop("response_format", None)
-                        resp = client.post(url, json=payload, headers={
-                            "Authorization": f"Bearer {key}",
-                            "Content-Type": "application/json",
-                            "HTTP-Referer": "https://redactvision.local",
-                            "X-Title": "RedactVision Agent",
-                        })
-            except httpx.TimeoutException:
-                last_error = _err(408, f"OpenRouter timeout for {model}")
-                continue
-            except Exception as exc:
-                return "", f"OpenRouter network error: {exc}"
-
-            if resp.status_code == 200:
-                try:
-                    body = resp.json()
-                    text = body["choices"][0]["message"]["content"]
-                    # If response_format wasn't used, some models wrap JSON in
-                    # markdown fences. Strip them.
-                    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
-                    text = re.sub(r"\s*```$", "", text)
-                    return text, None
-                except (KeyError, IndexError, TypeError, ValueError) as exc:
-                    return "", f"OpenRouter unexpected response shape: {exc}"
-
-            err = _err(resp.status_code, f"OpenRouter HTTP {resp.status_code} for {model}: {resp.text[:160]}")
-            if resp.status_code in (404, 410):
-                _blacklist_model("openrouter", model)
-            last_error = err
-        return "", last_error
-
-
-# ------------------------------------------------------------------
-# 3. OmniRoute (TERTIARY FALLBACK)
-# ------------------------------------------------------------------
-# OmniRoute — local OpenAI-compatible router.
-#
-# OmniRoute runs as a local CLI daemon (https://omniroute.ai) on
-# http://localhost:20128 by default. It exposes an OpenAI-compatible
-# /v1/chat/completions endpoint and routes `auto/*` model names to
-# the best underlying model for the task.
-#
-# Live-tested on 2026-08-30: `auto/best-reasoning` and
-# `auto/best-chat` both work and produce structured JSON. The local
-# server does NOT require authentication, so the OMNIROUTE_API_KEY
-# env var is optional when the URL points at localhost.
-# ------------------------------------------------------------------
-class OmniRouteProvider(Provider):
-    name = "omniroute"
-
-    def __init__(self) -> None:
-        self._url = os.environ.get("OMNIROUTE_URL", "http://localhost:20128/v1/chat/completions")
-        # `auto/best-reasoning` routes to a strong reasoning model,
-        # which is the right pick for browser-automation planning.
-        self._model = os.environ.get("OMNIROUTE_MODEL", "auto/best-reasoning")
-
-    def available(self) -> bool:
-        # The local OmniRoute server does not require auth, so
-        # availability is keyed on the URL being configured (even
-        # implicitly via the localhost default). The OMNIROUTE_API_KEY
-        # is only added as a Bearer token if it is set.
-        return bool(self._url)
-
-    def models(self) -> list[str]:
-        return [self._model]
-
-    def call(self, messages: list[dict], timeout: float = 30.0) -> Tuple[str, Optional[str]]:
-        model = self._model
-        if _is_blacklisted("omniroute", model):
-            return "", f"OmniRoute model blacklisted: {model}"
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0.1,
-            "max_tokens": 500,
-            "stream": False,  # OmniRoute streams SSE by default; we want a JSON response
-        }
-        headers = {"Content-Type": "application/json"}
-        key = os.environ.get("OMNIROUTE_API_KEY")
-        if key:
-            headers["Authorization"] = f"Bearer {key}"
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                resp = client.post(self._url, json=payload, headers=headers)
-        except httpx.TimeoutException:
-            return "", _err(408, f"OmniRoute timeout for {model}")
-        except Exception as exc:
-            return "", f"OmniRoute network error: {exc}"
-
-        if resp.status_code == 200:
-            try:
-                body = resp.json()
-                msg = body["choices"][0]["message"]
-                # Some OmniRoute-backed models (e.g. openai/gpt-oss-120b
-                # via the auto/* routers) put their answer in
-                # `reasoning_content` rather than `content`. Fall back
-                # to the reasoning text if content is missing.
-                text = msg.get("content") or msg.get("reasoning_content") or ""
-                if not text:
-                    return "", "OmniRoute returned an empty message body"
-                return text, None
-            except (KeyError, IndexError, TypeError, ValueError) as exc:
-                return "", f"OmniRoute unexpected response shape: {exc}"
-
-        err = _err(resp.status_code, f"OmniRoute HTTP {resp.status_code}: {resp.text[:160]}")
-        if resp.status_code in (404, 410):
-            _blacklist_model("omniroute", model)
-        return "", err
-
-
-# ------------------------------------------------------------------
 # Registry
+# Priority order: OmniRoute (Primary) -> OpenRouter (Secondary) -> Groq (Tertiary)
 # ------------------------------------------------------------------
 PROVIDERS: list[Provider] = [
-    GroqProvider(),
-    OpenRouterProvider(),
     OmniRouteProvider(),
+    OpenRouterProvider(),
+    GroqProvider(),
 ]

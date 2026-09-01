@@ -3,22 +3,17 @@ RedactVision Agent — Bounded multi-provider LLM fallback
 
 Strict priority order, NO infinite retry loop:
 
-    Groq (primary)
+    OmniRoute (PRIMARY: auto/smart, auto/coding, auto/fast, auto/cheap, auto/offline, auto)
         ↓ on hard failure
-    OpenRouter (secondary)
+    OpenRouter (SECONDARY: free models router)
         ↓ on hard failure
-    OmniRoute (tertiary)
+    Groq (TERTIARY FALLBACK: qwen3.8-27b, compound-mini, gpt-oss-20b)
         ↓ on hard failure
     FAILED (clean error, no further attempts)
 
 Within a single provider, we may retry ONCE on a retryable error
 (rate limit, timeout, 5xx). On a non-retryable error (401, 404, 410,
 invalid request), we move to the next provider immediately.
-
-This is the deliberate opposite of an infinite-retry loop: a single
-/llm/plan HTTP request can attempt at most 3 providers × 2 calls = 6
-HTTP calls before giving up. The orchestrator will never loop back
-to provider 1 after provider 3 has been tried.
 """
 from __future__ import annotations
 
