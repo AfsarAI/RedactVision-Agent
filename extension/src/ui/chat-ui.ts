@@ -207,11 +207,10 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   const minimizeBtn = root.querySelector<HTMLElement>("#rv-minimize-btn");
   const closeBtn = root.querySelector<HTMLElement>("#rv-close-btn");
   const dragHandle = root.querySelector<HTMLElement>("[data-rv-drag-handle]");
-  const statusbarDot = root.querySelector<HTMLElement>("#rv-statusbar-dot");
-  const statusbarLabel = root.querySelector<HTMLElement>("#rv-statusbar-label");
-  const settingsBtn = root.querySelector<HTMLElement>("#rv-settings-btn");
-  const themeBtn = root.querySelector<HTMLElement>("#rv-theme-btn");
-  const infoBtn = root.querySelector<HTMLElement>("#rv-info-btn");
+  const menuBtn = root.querySelector<HTMLElement>("#rv-menu-btn");
+  const menuDropdown = root.querySelector<HTMLElement>("#rv-menu");
+  const menuThemeIcon = root.querySelector<HTMLElement>("#rv-menu-theme-icon");
+  const suggestRow = root.querySelector<HTMLElement>("#rv-suggest-row");
   const quickSettings = root.querySelector<HTMLElement>("#rv-quick-settings");
   const qsAutoRedact = root.querySelector<HTMLInputElement>("#rv-qs-autoredact");
 
@@ -328,6 +327,11 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     });
   }
 
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => {
+      closeHandler?.();
+    });
+  }
   if (closeBtn) {
     closeBtn.addEventListener("click", () => {
       closeHandler?.();
@@ -509,6 +513,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     // First clear the empty placeholder.
     const placeholder = conversation.querySelector(".rv-empty");
     if (placeholder) placeholder.remove();
+    suggestRow?.classList.add("rv-hidden");
 
     // Tear down any prior processing block.
     if (currentProcessing) endProcessing("completed", "");
@@ -696,6 +701,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (!conversation) return;
     const placeholder = conversation.querySelector(".rv-empty");
     if (placeholder) placeholder.remove();
+    // The suggestion chips live just above the composer; once a real
+    // conversation starts they are no longer relevant.
+    suggestRow?.classList.add("rv-hidden");
     const block = document.createElement("div");
     block.className = "rv-msg rv-user";
     block.innerHTML = `<div class="rv-msg-bubble">${escapeHtml(text)}</div>`;
@@ -714,11 +722,6 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     }
     if (headerStatus) {
       headerStatus.textContent = label;
-    }
-    // Mirror the status into the footer statusbar pill.
-    if (statusbarDot && statusbarLabel) {
-      statusbarDot.className = `rv-statusbar-dot rv-${state}`;
-      statusbarLabel.textContent = label;
     }
     if (privacyBar) {
       if (state === "thinking") {
@@ -1286,8 +1289,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       (theme === "auto" && window.matchMedia("(prefers-color-scheme: light)").matches);
     currentTheme = light ? "light" : "dark";
     if (root) root.classList.toggle("rv-light", light);
-    if (themeBtn) {
-      themeBtn.textContent = light ? "☀️" : "🌙";
+    // Theme toggle is now a header 3-dot menu item — keep its icon in sync.
+    if (menuThemeIcon) {
+      menuThemeIcon.textContent = light ? "☀️" : "🌙";
     }
     if (quickSettings) {
       quickSettings
@@ -1302,31 +1306,106 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (qsAutoRedact) qsAutoRedact.checked = enabled;
   }
 
-  // ---- Footer / quick settings wiring ----
+  // ---- Header 3-dot menu & quick settings wiring ----
+  //
+  // The old footer statusbar (brand + duplicate status pill + gear/theme/
+  // info buttons) is gone. Every secondary control now lives behind the
+  // single ⋯ button in the header. Each item reuses the EXISTING handlers:
+  //   Quick Settings → #rv-quick-settings popover (theme + auto-redact)
+  //   Toggle Theme   → themeToggleHandler (same as the old 🌙 button)
+  //   Activity Log   → openDetails("timeline")
+  //   Sanitized Data → openDetails("data")
 
-  if (themeBtn) {
-    themeBtn.addEventListener("click", () => {
-      themeToggleHandler?.(currentTheme === "dark" ? "light" : "dark");
-    });
+  function isMenuOpen(): boolean {
+    return !!menuDropdown?.classList.contains("rv-open");
   }
 
-  if (settingsBtn) {
-    settingsBtn.addEventListener("click", (e) => {
+  function openMenu(): void {
+    if (!menuDropdown || !menuBtn) return;
+    menuDropdown.classList.add("rv-open");
+    menuDropdown.setAttribute("aria-hidden", "false");
+    menuBtn.setAttribute("aria-expanded", "true");
+  }
+
+  function closeMenu(): void {
+    if (!menuDropdown || !menuBtn) return;
+    menuDropdown.classList.remove("rv-open");
+    menuDropdown.setAttribute("aria-hidden", "true");
+    menuBtn.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleMenu(): void {
+    if (isMenuOpen()) closeMenu();
+    else openMenu();
+  }
+
+  if (menuBtn) {
+    menuBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      quickSettings?.classList.toggle("rv-open");
+      toggleMenu();
     });
   }
 
-  if (infoBtn) {
-    infoBtn.addEventListener("click", () => {
-      const isOpen = detailsPanel?.classList.contains("rv-open");
-      if (isOpen) {
-        closeDetails();
-      } else {
-        openDetails("timeline");
-      }
+  // Menu items — every action maps to existing functionality (no dead UI).
+  if (menuDropdown) {
+    menuDropdown.querySelectorAll<HTMLButtonElement>("[data-menu-action]").forEach((item) => {
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const action = item.dataset.menuAction;
+        if (action === "settings") {
+          // Open the existing quick-settings popover (theme + auto-redact).
+          quickSettings?.classList.add("rv-open");
+          closeMenu();
+          return;
+        }
+        if (action === "theme") {
+          themeToggleHandler?.(currentTheme === "dark" ? "light" : "dark");
+          closeMenu();
+          return;
+        }
+        if (action === "timeline") {
+          openDetails("timeline");
+          closeMenu();
+          return;
+        }
+        if (action === "data") {
+          openDetails("data");
+          closeMenu();
+          return;
+        }
+      });
     });
   }
+
+  // Keyboard accessibility: Enter/Space fire click natively on <button>;
+  // arrow-key navigation inside the dropdown for power users.
+  if (menuDropdown) {
+    menuDropdown.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const items = Array.from(
+        menuDropdown.querySelectorAll<HTMLButtonElement>("[data-menu-action]")
+      ).filter((el) => !el.hasAttribute("disabled"));
+      if (!items.length) return;
+      e.preventDefault();
+      const idx = items.indexOf(document.activeElement as HTMLButtonElement);
+      const next =
+        e.key === "ArrowDown"
+          ? items[(idx + 1 + items.length) % items.length]
+          : items[(idx - 1 + items.length) % items.length];
+      next?.focus();
+    });
+  }
+
+  // Escape closes the menu (and the quick-settings popover if open).
+  root.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (isMenuOpen()) {
+      e.stopPropagation();
+      closeMenu();
+      menuBtn?.focus();
+    }
+    quickSettings?.classList.remove("rv-open");
+  });
 
   if (quickSettings) {
     quickSettings.querySelectorAll<HTMLButtonElement>("[data-qs-theme]").forEach((b) => {
@@ -1342,16 +1421,34 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     });
   }
 
-  // Close the quick-settings popover when clicking anywhere else in the card.
+  // Suggestion chips ("Try: scroll down · click submit · fill the email")
+  // moved from the empty state to a row just above the composer.
+  if (suggestRow) {
+    suggestRow.addEventListener("click", (e) => {
+      const chip = (e.target as HTMLElement).closest?.(
+        ".rv-chip-suggest"
+      ) as HTMLElement | null;
+      if (chip?.dataset.suggest) submitText(chip.dataset.suggest);
+    });
+  }
+
+  // Close the quick-settings popover and the 3-dot menu when clicking
+  // anywhere else in the card.
   root.addEventListener("click", (e) => {
-    if (!quickSettings) return;
     const target = e.target as HTMLElement;
     if (
-      quickSettings.classList.contains("rv-open") &&
+      quickSettings?.classList.contains("rv-open") &&
       !quickSettings.contains(target) &&
-      settingsBtn && !settingsBtn.contains(target)
+      !menuBtn?.contains(target)
     ) {
       quickSettings.classList.remove("rv-open");
+    }
+    if (
+      menuDropdown?.classList.contains("rv-open") &&
+      !menuDropdown.contains(target) &&
+      !menuBtn?.contains(target)
+    ) {
+      closeMenu();
     }
   });
 
@@ -1372,6 +1469,8 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (conversation) {
       conversation.innerHTML = emptyStateHTML();
     }
+    // The card is back to an empty state — show the suggestion chips again.
+    suggestRow?.classList.remove("rv-hidden");
   }
 
   function resetConversation(): void {
@@ -1457,14 +1556,44 @@ function chatHTML(): string {
           <span id="rv-backend-label">Server</span>
         </div>
         <div class="rv-chat-controls">
+          <button class="rv-icon-btn rv-menu-btn" id="rv-menu-btn" type="button" title="Menu" aria-label="Open menu" aria-haspopup="true" aria-expanded="false">⋯</button>
           <button class="rv-icon-btn" id="rv-minimize-btn" type="button" title="Minimize" aria-label="Minimize">−</button>
           <button class="rv-icon-btn rv-close" id="rv-close-btn" type="button" title="Close" aria-label="Close">×</button>
         </div>
       </header>
 
+      <!-- 3-dot dropdown: the single entry point for all secondary controls. -->
+      <div class="rv-menu" id="rv-menu" role="menu" aria-hidden="true" aria-label="Chat menu">
+        <button type="button" class="rv-menu-item" role="menuitem" data-menu-action="settings" title="Theme & auto-redact">
+          <span class="rv-menu-ic">⚙️</span><span class="rv-menu-label">Quick Settings</span>
+        </button>
+        <button type="button" class="rv-menu-item" role="menuitem" data-menu-action="theme" title="Toggle light / dark theme">
+          <span class="rv-menu-ic" id="rv-menu-theme-icon">🌙</span><span class="rv-menu-label">Toggle Theme</span>
+        </button>
+        <button type="button" class="rv-menu-item" role="menuitem" data-menu-action="timeline" title="Agent execution history">
+          <span class="rv-menu-ic">📋</span><span class="rv-menu-label">Activity Log</span>
+        </button>
+        <button type="button" class="rv-menu-item" role="menuitem" data-menu-action="data" title="Sanitized data this page">
+          <span class="rv-menu-ic">🛡️</span><span class="rv-menu-label">Sanitized Data</span>
+        </button>
+      </div>
+
       <main class="rv-conversation" id="rv-conversation">${emptyStateHTML()}</main>
 
       <footer class="rv-composer">
+        <!-- Suggestion chips moved here from the old empty state -->
+        <div class="rv-suggest-row" id="rv-suggest-row">
+          <span class="rv-suggest-label">Try:</span>
+          <button type="button" class="rv-chip-suggest" data-suggest="scroll down">
+            <span class="rv-chip-ic">↓</span> scroll down
+          </button>
+          <button type="button" class="rv-chip-suggest" data-suggest="click submit">
+            <span class="rv-chip-ic">↖</span> click submit
+          </button>
+          <button type="button" class="rv-chip-suggest" data-suggest="fill the email">
+            <span class="rv-chip-ic">✎</span> fill the email
+          </button>
+        </div>
         <div class="rv-input-pill" id="rv-input-pill">
           <button class="rv-attach-btn" id="rv-attach-btn" type="button" title="Attachments coming soon" disabled>+</button>
           <textarea
@@ -1479,22 +1608,6 @@ function chatHTML(): string {
           </button>
         </div>
         <div class="rv-disclaimer">Agent can make mistakes. Please double-check.</div>
-      </footer>
-
-      <footer class="rv-statusbar">
-        <div class="rv-statusbar-brand">
-          <span class="rv-statusbar-avatar"><img class="rv-avatar-img rv-avatar-sm" data-rv-logo src="${rvLogoUrl()}" alt="" draggable="false" /></span>
-          <span class="rv-statusbar-name">RedactVision</span>
-          <span class="rv-statusbar-pill">
-            <span class="rv-statusbar-dot rv-ready" id="rv-statusbar-dot"></span>
-            <span id="rv-statusbar-label">Ready</span>
-          </span>
-        </div>
-        <div class="rv-statusbar-actions">
-          <button class="rv-sb-btn" id="rv-settings-btn" type="button" title="Quick settings" aria-label="Quick settings">⚙️</button>
-          <button class="rv-sb-btn" id="rv-theme-btn" type="button" title="Toggle theme" aria-label="Toggle theme">🌙</button>
-          <button class="rv-sb-btn" id="rv-info-btn" type="button" title="Details & sanitized data" aria-label="Details">ⓘ</button>
-        </div>
       </footer>
 
       <div class="rv-quick-settings" id="rv-quick-settings">
@@ -1521,20 +1634,7 @@ function emptyStateHTML(): string {
     <div class="rv-empty">
       <div class="rv-empty-bot">🤖</div>
       <div class="rv-empty-title">Ready when you are</div>
-      <div class="rv-empty-try">Try:</div>
-      <div class="rv-empty-chips">
-        <button type="button" class="rv-chip-suggest" data-suggest="scroll down">
-          <span class="rv-chip-ic">↓</span> scroll down
-        </button>
-        <span class="rv-chip-sep">·</span>
-        <button type="button" class="rv-chip-suggest" data-suggest="click submit">
-          <span class="rv-chip-ic">↖</span> click submit
-        </button>
-        <span class="rv-chip-sep">·</span>
-        <button type="button" class="rv-chip-suggest" data-suggest="fill the email">
-          <span class="rv-chip-ic">✎</span> fill the email
-        </button>
-      </div>
+      <div class="rv-empty-hint">Pick a suggestion below or type your own task.</div>
     </div>
   `;
 }

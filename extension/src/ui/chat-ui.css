@@ -144,8 +144,12 @@
   height: auto;
 }
 .rv-chat.rv-minimized .rv-conversation,
-.rv-chat.rv-minimized .rv-composer,
-.rv-chat.rv-minimized .rv-statusbar {
+.rv-chat.rv-minimized .rv-composer {
+  display: none;
+}
+/* Safety: popovers must never float over the collapsed minimized bar. */
+.rv-chat.rv-minimized .rv-menu,
+.rv-chat.rv-minimized .rv-quick-settings {
   display: none;
 }
 
@@ -1420,128 +1424,124 @@
   color: #64748b;
 }
 
-/* ----- Footer statusbar (brand + status + actions) ----- */
-.rv-statusbar {
+/* ----- Header 3-dot menu (single secondary-controls entry point) -----
+   Replaces the old footer statusbar: brand + duplicate status pill +
+   gear/theme/info buttons. Every item reuses existing handlers. */
+.rv-menu-btn {
+  font-size: 15px;
+  line-height: 1;
+  letter-spacing: 1px;
+  padding-bottom: 2px; /* optically center the ⋯ glyph */
+}
+.rv-menu {
+  position: absolute;
+  top: 46px;
+  right: 10px;
+  z-index: 80;
+  min-width: 178px;
+  max-width: calc(100% - 20px);
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(7, 11, 24, 0.45);
-  flex-shrink: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 13px;
+  background:
+    radial-gradient(300px 120px at 100% 0%, rgba(91, 107, 255, 0.14), transparent 70%),
+    rgba(11, 16, 34, 0.96);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--rv-border-strong);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top right;
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease;
 }
-.rv-chat.rv-light .rv-statusbar {
-  border-top-color: rgba(91, 107, 255, 0.15);
-  background: rgba(255, 255, 255, 0.35);
+.rv-menu.rv-open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
 }
-.rv-statusbar-brand {
+.rv-menu-item {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
-  min-width: 0;
-}
-.rv-statusbar-avatar {
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 8px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  color: white;
-  background: linear-gradient(135deg, #5b6bff 0%, #22d3a0 100%);
-  border-radius: 6px;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-/* Brand logo inside the footer statusbar avatar. */
-.rv-statusbar-avatar .rv-avatar-img {
   width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: inherit;
-  display: block;
-  user-select: none;
-  pointer-events: none;
-  -webkit-user-drag: none;
-}
-.rv-statusbar-name {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--rv-text);
-  letter-spacing: -0.1px;
-}
-.rv-statusbar-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  background: rgba(34, 211, 160, 0.12);
-  border: 1px solid rgba(34, 211, 160, 0.30);
-  font-size: 10.5px;
-  font-weight: 600;
-  color: #6ee7b7;
-}
-.rv-chat.rv-light .rv-statusbar-pill {
-  background: rgba(13, 157, 118, 0.10);
-  border-color: rgba(13, 157, 118, 0.30);
-  color: #0d9d76;
-}
-.rv-statusbar-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-.rv-statusbar-dot.rv-ready,
-.rv-statusbar-dot.rv-completed {
-  background: var(--rv-privacy);
-  box-shadow: 0 0 5px rgba(34, 211, 160, 0.7);
-}
-.rv-statusbar-dot.rv-thinking {
-  background: #f59e0b;
-  box-shadow: 0 0 5px rgba(245, 158, 11, 0.7);
-  animation: rv-blink 1.2s ease-in-out infinite;
-}
-.rv-statusbar-dot.rv-error {
-  background: var(--rv-warn);
-  box-shadow: 0 0 5px rgba(255, 90, 122, 0.7);
-}
-.rv-statusbar-actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.rv-sb-btn {
-  width: 30px;
-  height: 30px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(15, 23, 42, 0.55);
-  border: 1px solid var(--rv-border);
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
   border-radius: 9px;
-  font-size: 13px;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--rv-text);
+  text-align: left;
   cursor: pointer !important;
-  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  transition: background 0.12s ease;
 }
-.rv-sb-btn:hover {
+.rv-menu-item:hover {
   background: rgba(91, 107, 255, 0.18);
-  border-color: var(--rv-border-strong);
-  transform: translateY(-1px);
 }
-.rv-chat.rv-light .rv-sb-btn {
-  background: rgba(255, 255, 255, 0.70);
+.rv-menu-item:focus-visible {
+  outline: 2px solid rgba(91, 107, 255, 0.7);
+  outline-offset: -2px;
+}
+.rv-menu-ic {
+  font-size: 13px;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.rv-menu-label {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rv-chat.rv-light .rv-menu {
+  background: rgba(255, 255, 255, 0.97);
+  border-color: rgba(91, 107, 255, 0.25);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+}
+.rv-chat.rv-light .rv-menu-item {
+  color: #1e293b;
+}
+.rv-chat.rv-light .rv-menu-item:hover {
+  background: rgba(91, 107, 255, 0.10);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rv-menu {
+    transition: none;
+  }
+}
+
+/* ----- Suggestion chips (row just above the composer) ----- */
+.rv-suggest-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 2px 6px;
+}
+.rv-suggest-row.rv-hidden {
+  display: none;
+}
+.rv-suggest-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--rv-text-mute);
+  letter-spacing: 0.2px;
+}
+.rv-chat.rv-light .rv-suggest-label {
+  color: #64748b;
 }
 
 /* ----- Quick settings popover ----- */
 .rv-quick-settings {
   position: absolute;
   right: 10px;
-  bottom: 52px;
+  bottom: 104px;
   z-index: 70;
   width: 230px;
   display: flex;
@@ -1674,21 +1674,11 @@
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-6px); }
 }
-.rv-empty-try {
-  font-size: 12px;
-  color: var(--rv-text-dim);
-  margin-bottom: 10px;
-}
-.rv-empty-chips {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-.rv-chip-sep {
-  color: var(--rv-text-mute);
+.rv-empty-hint {
   font-size: 11px;
+  color: var(--rv-text-mute);
+  text-align: center;
+  margin-top: 6px;
 }
 .rv-chip-suggest {
   display: inline-flex;
