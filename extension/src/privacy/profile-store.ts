@@ -295,9 +295,19 @@ export async function setSelectedProfileId(profileId: string | null): Promise<vo
 
 export async function getSelectedProfile(): Promise<LocalProfileEntry | null> {
   const profiles = await loadLocalProfiles();
+  if (profiles.length === 0) return null;
+
   const selectedId = await getSelectedProfileId();
-  if (!selectedId) return null;
-  return profiles.find((profile) => profile.id === selectedId) ?? null;
+  if (selectedId) {
+    const selected = profiles.find((profile) => profile.id === selectedId);
+    if (selected) return selected;
+  }
+
+  // Fallback: if no profile is selected but profiles exist, auto-select the first one.
+  // This handles the case where a profile was created/imported without explicit selection.
+  const firstProfile = profiles[0];
+  await setSelectedProfileId(firstProfile.id);
+  return firstProfile;
 }
 
 export async function upsertLocalProfile(profile: LocalProfileEntry): Promise<void> {
@@ -384,6 +394,18 @@ export async function getSelectedProfileTokenMap(): Promise<Record<string, strin
   return buildProfileTokenMap(profile);
 }
 
+/**
+ * Returns the currently selected profile entry with values loaded.
+ *
+ * The profile system originally stored encrypted profiles that were
+ * decrypted and cached in getSelectedProfile(). This function exists for
+ * compatibility with older code that still calls it, but the main way to
+ * get a profile now is via getSelectedProfile().
+ */
+export async function getSelectedProfileEntry(): Promise<LocalProfileEntry | null> {
+  return await getSelectedProfile();
+}
+
 export interface ProfileResolutionCandidate {
   profileId: string;
   profileLabel: string;
@@ -411,16 +433,26 @@ export async function resolveTokenFromProfile(token: string): Promise<string | n
 export async function resolveTokenFromProfiles(token: string): Promise<ProfileResolutionResult> {
   const field = parseProfileToken(token) || legacyTokenToField(token);
   if (!field) {
+    console.warn(`[ProfileStore] Could not parse field from token: ${token}`);
     return { value: null, status: "missing", field: null, candidates: [] };
   }
 
   const profiles = await loadLocalProfiles();
   const selectedId = await getSelectedProfileId();
+
+  console.log(`[ProfileStore] resolveTokenFromProfiles("${token}") → field="${field}", profiles=${profiles.length}, selectedId=${selectedId ?? "null"}`);
+  for (const p of profiles) {
+    console.log(`[ProfileStore]   Profile "${p.label}" (id=${p.id}) fields=${Object.keys(p.values).join(",")}`);
+  }
+
   const candidates: ProfileResolutionCandidate[] = [];
 
   for (const profile of profiles) {
     const value = profile.values[field];
-    if (!value) continue;
+    if (!value) {
+      console.log(`[ProfileStore]   Profile "${profile.label}" missing field "${field}"`);
+      continue;
+    }
     candidates.push({
       profileId: profile.id,
       profileLabel: profile.label,
@@ -429,24 +461,49 @@ export async function resolveTokenFromProfiles(token: string): Promise<ProfileRe
     });
   }
 
+  // Priority 1: Use explicitly selected profile if it has the field
   if (selectedId) {
     const selected = profiles.find((profile) => profile.id === selectedId);
-    const selectedValue = selected?.values[field];
-    if (selectedValue) {
-      return { value: selectedValue, status: "resolved", field, candidates };
+    if (selected) {
+      const selectedValue = selected.values[field];
+      if (selectedValue) {
+        console.log(`[ProfileStore] ✅ Resolved from selected profile "${selected.label}": ${field}="${maskProfileValue(selectedValue)}"`);
+        return { value: selectedValue, status: "resolved", field, candidates };
+      }
+      console.log(`[ProfileStore] Selected profile "${selected.label}" exists but missing field "${field}" (has: ${Object.keys(selected.values).join(",")})`);
+    } else {
+      console.log(`[ProfileStore] selectedId=${selectedId} not found in ${profiles.length} profiles`);
     }
   }
 
-  if (candidates.length === 1) {
-    const profile = profiles.find((entry) => entry.id === candidates[0].profileId);
+  // Priority 2: If only one profile exists and it has the field, auto-select and use it
+  if (profiles.length === 1 && profiles[0].values[field]) {
+    await setSelectedProfileId(profiles[0].id);
+    console.log(`[ProfileStore] ✅ Auto-selected single profile "${profiles[0].label}": ${field}="${maskProfileValue(profiles[0].values[field]!)}"`);
     return {
-      value: profile?.values[field] || null,
-      status: profile?.values[field] ? "resolved" : "missing",
+      value: profiles[0].values[field] || null,
+      status: "resolved",
       field,
       candidates,
     };
   }
 
+  // Priority 3: If only one candidate has this field, use it
+  if (candidates.length === 1) {
+    const profile = profiles.find((entry) => entry.id === candidates[0].profileId);
+    if (profile?.values[field]) {
+      await setSelectedProfileId(profile.id);
+      console.log(`[ProfileStore] ✅ Resolved from single candidate "${profile.label}": ${field}="${maskProfileValue(profile.values[field]!)}"`);
+      return {
+        value: profile.values[field],
+        status: "resolved",
+        field,
+        candidates,
+      };
+    }
+  }
+
+  console.warn(`[ProfileStore] ❌ Could not resolve token="${token}" field="${field}" candidates=${candidates.length}`);
   return {
     value: null,
     status: candidates.length > 1 ? "ambiguous" : "missing",

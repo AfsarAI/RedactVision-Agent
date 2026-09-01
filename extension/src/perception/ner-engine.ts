@@ -19,6 +19,12 @@ export interface NERResult {
   confidence: number;
   /** Processing time in ms */
   processingTimeMs: number;
+  /** True detection status — tells callers whether ML inference actually ran */
+  status: "success" | "unavailable" | "failed" | "skipped";
+  /** Source of the detection (ml or regex) */
+  source: "ml" | "regex";
+  /** Human-readable message about the detector state */
+  message?: string;
 }
 
 export interface NEREntity {
@@ -79,6 +85,7 @@ export class NEREngine {
   private isInitialized = false;
   private initPromise: Promise<void> | null = null;
   private modelId: string;
+  private initError: string | null = null;
 
   constructor(modelId: string = "Xenova/bert-base-multilingual-cased-ner-hrl") {
     // Using a lightweight multilingual NER model
@@ -101,8 +108,17 @@ export class NEREngine {
     return this.initPromise;
   }
 
+  /**
+   * Returns true only when the ML pipeline is actually loaded and usable.
+   */
+  isMLAvailable(): boolean {
+    return this.isInitialized && this.pipeline !== null;
+  }
+
   private async _initialize(): Promise<void> {
     try {
+      console.log("[NEREngine] Initializing Transformers.js pipeline...");
+
       // Dynamic import for code splitting
       const { pipeline, env } = await import("@huggingface/transformers");
 
@@ -121,10 +137,14 @@ export class NEREngine {
       );
 
       this.isInitialized = true;
+      this.initError = null;
       console.log("[NEREngine] Transformers.js pipeline initialized");
-    } catch {
-      // Clean fallback to deterministic regex-based NER without red console error traces
+    } catch (error) {
+      // Graceful degradation: allow pipeline to continue without NER
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn("[NEREngine] Transformers.js unavailable - NER will be skipped:", error);
       this.isInitialized = true;
+      this.initError = msg;
       this.pipeline = null;
     }
   }
@@ -149,20 +169,42 @@ export class NEREngine {
         entities: [],
         confidence: 0,
         processingTimeMs: performance.now() - startTime,
+        status: "skipped",
+        source: "regex",
+        message: "Text too short for NER",
       };
     }
 
     // Try ML-based NER first
     if (this.pipeline && this.isInitialized) {
       try {
-        return await this.runMLNER(text, startTime);
+        const result = await this.runMLNER(text, startTime);
+        result.status = "success";
+        result.source = "ml";
+        return result;
       } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
         console.warn("[NEREngine] ML NER failed, falling back to regex:", error);
+        // Fall through to regex with truthful status
       }
     }
 
-    // Fallback to regex-based NER
-    return this.runRegexNER(text, startTime);
+    // Fallback to regex-based NER — but report truthfully
+    const regexResult = this.runRegexNER(text, startTime);
+    if (this.initError) {
+      regexResult.status = "unavailable";
+      regexResult.source = "regex";
+      regexResult.message = `ML NER unavailable (${this.initError}); regex fallback used`;
+    } else if (!this.pipeline) {
+      regexResult.status = "unavailable";
+      regexResult.source = "regex";
+      regexResult.message = "ML NER pipeline not initialized; regex fallback used";
+    } else {
+      regexResult.status = "success";
+      regexResult.source = "regex";
+      regexResult.message = "Regex-based entity detection";
+    }
+    return regexResult;
   }
 
   /**
@@ -213,6 +255,8 @@ export class NEREngine {
         entities,
         confidence,
         processingTimeMs: performance.now() - startTime,
+        status: "success",
+        source: "ml",
       };
     } catch (error) {
       console.error("[NEREngine] ML NER error:", error);
@@ -361,6 +405,8 @@ export class NEREngine {
       entities: deduplicated,
       confidence,
       processingTimeMs: performance.now() - startTime,
+      status: "success",
+      source: "regex",
     };
   }
 

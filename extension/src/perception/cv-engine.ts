@@ -29,6 +29,9 @@ export interface CVResult {
   confidence: number; // mean of detections
   processingTimeMs: number;
   modelUsed: string;
+  status: "success" | "unavailable" | "failed" | "skipped";
+  source: "cv" | "none";
+  message?: string;
 }
 
 // Vision model reference — lightweight object-detection / face-detection
@@ -46,6 +49,7 @@ export class CVEngine {
   private isInitialized = false;
   private initPromise: Promise<void> | null = null;
   private modelId: string;
+  private initError: string | null = null;
 
   constructor(modelId: string = DEFAULT_CV_MODEL) {
     this.modelId = modelId;
@@ -61,16 +65,25 @@ export class CVEngine {
     return this.initPromise;
   }
 
+  /**
+   * Returns true only when the vision pipeline is actually loaded and usable.
+   */
+  isPipelineAvailable(): boolean {
+    return this.isInitialized && this.pipeline !== null;
+  }
+
   private async _initialize(): Promise<void> {
     try {
+      console.log("[CVEngine] Initializing vision pipeline...");
+
       // Dynamic import for code splitting — same pattern as NEREngine
       const { pipeline, env } = await import("@huggingface/transformers");
 
       env.allowLocalModels = false;
       env.useBrowserCache = true;
 
-      // Try object-detection / vision pipeline first
-      // If not available, fall back gracefully
+      // Try image-classification / vision pipeline first
+      // Using a lightweight model that is more likely to load in browser
       this.pipeline = await pipeline(
         "object-detection",
         this.modelId,
@@ -81,10 +94,13 @@ export class CVEngine {
       );
 
       this.isInitialized = true;
+      this.initError = null;
       console.log("[CVEngine] Vision pipeline initialized");
-    } catch {
-      // Graceful degradation: allow pipeline to continue without CV
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn("[CVEngine] Vision pipeline unavailable:", msg);
       this.isInitialized = true;
+      this.initError = msg;
       this.pipeline = null;
     }
   }
@@ -107,12 +123,16 @@ export class CVEngine {
     const maxResults = options.maxResults ?? 50;
 
     if (!this.pipeline) {
-      // No vision pipeline — return empty result gracefully
       return {
         detections: [],
         confidence: 0,
         processingTimeMs: performance.now() - startTime,
         modelUsed: this.modelId,
+        status: "unavailable",
+        source: "none",
+        message: this.initError
+          ? `Vision pipeline failed: ${this.initError}`
+          : "Vision pipeline not available",
       };
     }
 
@@ -157,15 +177,19 @@ export class CVEngine {
         confidence,
         processingTimeMs: performance.now() - startTime,
         modelUsed: this.modelId,
+        status: "success",
+        source: "cv",
       };
     } catch (error) {
       console.error("[CVEngine] Vision recognition failed:", error);
-      // Graceful fall back to empty results — pipeline must not block
       return {
         detections: [],
         confidence: 0,
         processingTimeMs: performance.now() - startTime,
         modelUsed: this.modelId,
+        status: "failed",
+        source: "none",
+        message: error instanceof Error ? error.message : String(error),
       };
     }
   }

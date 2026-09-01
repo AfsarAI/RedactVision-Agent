@@ -756,11 +756,11 @@
 
       function resetForm() {
         $("demo-form").reset();
-        var pw = $("password");
+        var pw = $("f6");
         pw.value = "MySecretPassword123";   // restore demo seed value
-        var em = $("email");
+        var em = $("f2");
         if (!em.value) em.value = "rahul@gmail.com";
-        var ph = $("phone");
+        var ph = $("f3");
         if (!ph.value) ph.value = "9876543210";
         closeSuccess();
         $("page-container").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -771,12 +771,12 @@
         event.preventDefault();
 
         var data = {
-          fullName: $("full-name").value.trim(),
-          email: $("email").value.trim(),
-          phone: $("phone").value.trim(),
-          password: $("password").value,
+          fullName: $("f1").value.trim(),
+          email: $("f2").value.trim(),
+          phone: $("f3").value.trim(),
+          password: $("f6").value,
           country: $("country").value,
-          message: $("message").value.trim()
+          message: $("f8").value.trim()
         };
 
         if (!data.fullName || !data.email || !data.phone || !data.password) {

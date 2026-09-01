@@ -60,6 +60,7 @@ export type AgentActivityKind =
 
 export interface AgentActivity {
   id: string;
+  taskId: string; // Unique identifier for the parent task/prompt
   kind: AgentActivityKind;
   text: string;
   detail?: string;
@@ -120,6 +121,10 @@ export class AgentSession {
   private maxIterations: number;
   private lastSanitized: SanitizedPageDOM | null = null;
   private sessionProfile: LocalProfileValues | null = null; // Extracted from user prompts
+
+  // Per-prompt state for proper activity/task association
+  private currentTaskId: string | null = null;
+  private promptActivityHistory: Record<string, AgentActivity[]> = {}; // taskId -> activities
 
   /**
    * When the executor needs user input (AskUserInfo), the loop pauses
@@ -254,6 +259,33 @@ export class AgentSession {
   }
 
   /**
+   * Restore profile data from persisted storage.
+   *
+   * This ensures that the session has access to saved profiles.
+   * Called during session initialization to load saved profile data.
+   */
+  async restoreProfile(): Promise<void> {
+    const { getSelectedProfile, getSelectedProfileId } = await import(
+      "../privacy/profile-store"
+    );
+    const selectedProfile = await getSelectedProfile();
+    const selectedId = await getSelectedProfileId();
+
+    // Only restore if we have both a selected profile AND ID
+    if (selectedProfile && selectedId) {
+      // Ensure the profile data is present
+      if (selectedProfile && selectedProfile.values && Object.keys(selectedProfile.values).length > 0) {
+        this.sessionProfile = selectedProfile.values;
+        console.log(
+          `[AgentSession] Restored profile "${selectedProfile.label}" with fields: ${Object.keys(selectedProfile.values).join(",")}`
+        );
+      } else {
+        console.warn("[AgentSession] Selected profile exists but has no values");
+      }
+    }
+  }
+
+  /**
    * Called by the UI when the user supplies a value in the chat.
    * Injects the value into sessionProfile and retries the paused action.
    * The caller passes the raw (unsanitized) user reply — we sanitize it
@@ -271,10 +303,9 @@ export class AgentSession {
     this.sessionProfile[field] = userReply;
 
     // Also persist to saved profiles so the value is available next time.
-    const { normalizeFieldKey, upsertLocalProfile } = await import(
+    const { normalizeFieldKey, upsertLocalProfile, getSelectedProfile } = await import(
       "../privacy/profile-store"
     );
-    const { getSelectedProfile } = await import("../privacy/profile-store");
     const selected = await getSelectedProfile();
     const entry = {
       id: selected?.id ?? `session-${Date.now()}`,
@@ -286,6 +317,9 @@ export class AgentSession {
       },
     };
     await upsertLocalProfile(entry);
+    // Ensure this profile is selected so future prompts use it
+    const { setSelectedProfileId } = await import("../privacy/profile-store");
+    await setSelectedProfileId(entry.id);
 
     const action = this.pausedAction;
     const askInfo = this.pausedAskInfo;
@@ -362,6 +396,11 @@ export class AgentSession {
     const startedAt = performance.now();
     this.cancelled = false;
 
+    // Generate unique task ID for this prompt - all activities will be scoped to it
+    const taskId = this.generateTaskId();
+    this.currentTaskId = taskId;
+    console.log(`[RedactVision][${taskId}] Prompt received: "${prompt.slice(0, 50)}..."`);
+
     // BEFORE sanitization: extract personal data fields from the original prompt
     // (e.g., "my name is X, email is Y"). Store as session profile for form filling.
     const rawPrompt = prompt;
@@ -374,6 +413,20 @@ export class AgentSession {
         kind: "info",
         text: `Saved local profile detail(s): ${fieldNames.join(", ")}`,
       });
+    }
+
+    // Check if user has a saved profile already (for first-time form fill requests)
+    if (!this.sessionProfile || Object.keys(this.sessionProfile).length === 0) {
+      const { getSelectedProfile } = await import("../privacy/profile-store");
+      const savedProfile = await getSelectedProfile();
+      if (savedProfile && Object.keys(savedProfile.values).length > 0) {
+        this.sessionProfile = savedProfile.values;
+        const fieldCount = Object.keys(savedProfile.values).length;
+        this.push({
+          kind: "info",
+          text: `Using saved profile: ${savedProfile.label} (${fieldCount} field${fieldCount === 1 ? "" : "s"})`,
+        });
+      }
     }
 
     // PRIVACY: the prompt itself may contain raw PII ("fill email
@@ -650,7 +703,9 @@ export class AgentSession {
           promptText += `You have saved values in: ${options}. Type your value in the chat below.`;
         } else {
           promptText +=
-            "I don't have it saved. Just type it in the chat below and I'll fill the field for you.";
+            "I don't have this saved in your profile yet. You can either:\n" +
+            "• Type the value in the chat below, and I'll fill it now (and save it for next time)\n" +
+            "• Or save it in the extension settings: click the extension icon → Personal Profiles → add your details";
         }
 
         this.push({
@@ -793,15 +848,38 @@ export class AgentSession {
     return false;
   }
 
-  private push(activity: Omit<AgentActivity, "id" | "timestamp">): AgentActivity {
+  private push(activity: Omit<AgentActivity, "id" | "timestamp" | "taskId">): AgentActivity {
+    const taskId = this.currentTaskId || "unknown";
     const full: AgentActivity = {
       ...activity,
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      taskId,
       timestamp: Date.now(),
     };
     this.activities.push(full);
+
+    // Track per-task activities for proper association
+    if (!this.promptActivityHistory[taskId]) {
+      this.promptActivityHistory[taskId] = [];
+    }
+    this.promptActivityHistory[taskId].push(full);
+
     this.callbacks.onActivity?.(full);
     return full;
+  }
+
+  /**
+   * Get all activities associated with a specific task.
+   */
+  getActivitiesForTask(taskId: string): AgentActivity[] {
+    return this.promptActivityHistory[taskId] || [];
+  }
+
+  /**
+   * Generate a new task ID for a prompt and return it.
+   */
+  private generateTaskId(): string {
+    return `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
   private delay(ms: number): Promise<void> {

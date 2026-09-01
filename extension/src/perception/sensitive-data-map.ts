@@ -247,4 +247,11 @@ export class SensitiveDataMapManager {
 
     return { total: regions.length, byType, bySource };
   }
+
+  /**
+   * Get total count of regions in the map.
+   */
+  getRegionCount(): number {
+    return this.getRegions().length;
+  }
 }

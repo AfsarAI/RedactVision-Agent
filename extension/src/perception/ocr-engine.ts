@@ -19,6 +19,12 @@ export interface OCRResult {
   regions: OCRRegion[];
   /** Processing time in ms */
   processingTimeMs: number;
+  /** True detection status — tells callers whether OCR actually ran */
+  status: "success" | "unavailable" | "failed" | "skipped";
+  /** Source of the detection (tesseract or fallback) */
+  source: "tesseract" | "none";
+  /** Human-readable message about the detector state */
+  message?: string;
 }
 
 export interface OCRRegion {
@@ -58,6 +64,7 @@ export class OCREngine {
   private worker: unknown | null = null;
   private isInitialized = false;
   private initPromise: Promise<void> | null = null;
+  private initError: string | null = null;
 
   /**
    * Initialize the Tesseract worker.
@@ -72,6 +79,13 @@ export class OCREngine {
 
     this.initPromise = this._initialize();
     return this.initPromise;
+  }
+
+  /**
+   * Returns true only when the Tesseract worker is actually loaded and usable.
+   */
+  isWorkerAvailable(): boolean {
+    return this.isInitialized && this.worker !== null;
   }
 
   private async _initialize(): Promise<void> {
@@ -92,10 +106,14 @@ export class OCREngine {
       });
 
       this.isInitialized = true;
+      this.initError = null;
       console.log("[OCREngine] Tesseract.js worker initialized");
     } catch (error) {
-      console.error("[OCREngine] Failed to initialize Tesseract:", error);
-      throw error;
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn("[OCREngine] Tesseract.js unavailable - OCR will be skipped:", error);
+      this.isInitialized = true;
+      this.initError = msg;
+      this.worker = null;
     }
   }
 
@@ -116,7 +134,17 @@ export class OCREngine {
     await this.initialize();
 
     if (!this.worker) {
-      throw new Error("OCR worker not initialized");
+      return {
+        text: "",
+        confidence: 0,
+        regions: [],
+        processingTimeMs: performance.now() - startTime,
+        status: "unavailable",
+        source: "none",
+        message: this.initError
+          ? `Tesseract.js failed to initialize: ${this.initError}`
+          : "Tesseract.js worker not available",
+      };
     }
 
     // Convert ImageData to data URL if needed
@@ -134,11 +162,21 @@ export class OCREngine {
       const result = await tesseractWorker.recognize(imageData as string);
 
       const processingTimeMs = performance.now() - startTime;
-
-      return this.parseTesseractResult(result, processingTimeMs);
+      const parsedResult = this.parseTesseractResult(result, processingTimeMs);
+      parsedResult.status = "success";
+      parsedResult.source = "tesseract";
+      return parsedResult;
     } catch (error) {
       console.error("[OCREngine] OCR recognition failed:", error);
-      throw error;
+      return {
+        text: "",
+        confidence: 0,
+        regions: [],
+        processingTimeMs: performance.now() - startTime,
+        status: "failed",
+        source: "none",
+        message: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 
@@ -188,6 +226,8 @@ export class OCREngine {
       confidence: result.confidence / 100,
       regions,
       processingTimeMs,
+      status: "success",
+      source: "tesseract",
     };
   }
 
