@@ -126,6 +126,11 @@ export interface ChatUIHandles {
   showSystemError(error: SystemError): void;
   /** Reset the card to a clean state (also hides any prior summary). */
   resetConversation(): void;
+  /**
+   * Immediately stop the live "Working on…" spinner WITHOUT showing a
+   * summary card. Used when the agent pauses to ask for user input.
+   */
+  stopProcessing(): void;
   /** Latest sanitized-data snapshot for the details panel. */
   setSanitizedData(data: SanitizedDataSnapshot): void;
   /** Apply dark / light / auto theme to the card. */
@@ -332,11 +337,6 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       closeHandler?.();
     });
   }
-  if (closeBtn) {
-    closeBtn.addEventListener("click", () => {
-      closeHandler?.();
-    });
-  }
 
   // ---- Drag (pointer events) ----
   //
@@ -456,6 +456,10 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     timer: ReturnType<typeof setInterval> | null;
   } | null = null;
 
+  // Tracks the deferred removal of a collapsed working-line so a new
+  // prompt can cancel it and never end up with two spinners visible.
+  let processingRemovalTimer: ReturnType<typeof setTimeout> | null = null;
+
   const DEFAULT_STEPS: Step[] = [
     { key: "perceive", label: "Page analyzed", done: false, active: false },
     { key: "privacy", label: "Privacy protected", done: false, active: false },
@@ -515,8 +519,15 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (placeholder) placeholder.remove();
     suggestRow?.classList.add("rv-hidden");
 
-    // Tear down any prior processing block.
+    // Tear down any prior processing block. Also cancel the deferred
+    // removal and purge residual "fading-out" nodes so a paused→resume
+    // or a very fast follow-up prompt never shows two spinners.
     if (currentProcessing) endProcessing("completed", "");
+    if (processingRemovalTimer) {
+      clearTimeout(processingRemovalTimer);
+      processingRemovalTimer = null;
+    }
+    conversation.querySelectorAll<HTMLElement>(".rv-processing").forEach((el) => el.remove());
 
     const startedAt = Date.now();
     const el = document.createElement("div");
@@ -579,7 +590,8 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (!currentProcessing) return;
     const cp = currentProcessing;
     if (cp.timer) clearInterval(cp.timer);
-    // Animate out: collapse, then remove.
+    // Animate out: collapse, then remove (tracking the deferred
+    // removal so a new prompt can cancel it and purge the node).
     cp.el.style.transition = "opacity 0.18s ease, max-height 0.25s ease, margin 0.25s ease";
     cp.el.style.maxHeight = cp.el.offsetHeight + "px";
     requestAnimationFrame(() => {
@@ -588,9 +600,22 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       cp.el.style.margin = "0 14px";
       cp.el.style.padding = "0 14px";
       cp.el.style.overflow = "hidden";
-      setTimeout(() => cp.el.remove(), 280);
+      if (processingRemovalTimer) clearTimeout(processingRemovalTimer);
+      processingRemovalTimer = setTimeout(() => {
+        cp.el.remove();
+        processingRemovalTimer = null;
+      }, 280);
     });
     currentProcessing = null;
+  }
+
+  /**
+   * Stop the live "Working on…" spinner WITHOUT rendering a summary.
+   * Used when the agent pauses to ask the user for a value — the
+   * missing-info prompt stays visible and the composer re-enables.
+   */
+  function stopProcessing(): void {
+    if (currentProcessing) endProcessing("cancelled", "");
   }
 
   // ---- Activity rendering ----
@@ -757,11 +782,25 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     if (!conversation || !root) return;
     // Compact single-line privacy status (full token table lives in
     // the Details panel → "Sanitized data" tab).
+    //
+    // The redaction card is a *page-level* privacy status, so it is
+    // pinned to the TOP of the conversation feed. It must never sit
+    // between the per-prompt messages — otherwise result cards that
+    // used to be anchored to it ended up ABOVE the user's newest
+    // input (output-before-input ordering bug).
     let card = root.querySelector<HTMLElement>(".rv-redaction-card");
     if (!card) {
+      // The privacy status replaces the "Ready when you are" placeholder —
+      // drop it so a dead empty-state isn't left below the pinned card.
+      conversation.querySelector(".rv-empty")?.remove();
       card = document.createElement("div");
       card.className = "rv-redaction-card";
-      conversation.appendChild(card);
+      const first = conversation.firstChild;
+      if (first) {
+        conversation.insertBefore(card, first);
+      } else {
+        conversation.appendChild(card);
+      }
     }
 
     const types = Object.keys(summary.byType);
@@ -870,16 +909,20 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     closeDetails();
     lastSummary = summary;
 
-    // Build the compact summary card.
+    // Modern accordion result card:
+    //   Compact header (badge + title + one-liner stats) → click to
+    //   expand an inline body with a stats grid, reason, mini timeline
+    //   and actions (copy / full report). No more tiny cramped boxes.
+
     const isOk = summary.phase === "completed";
     const isFailed = summary.phase === "failed";
     const isCapped = summary.phase === "max_iterations_reached";
     const isOffline = summary.phase === "offline";
     const variantClass = isFailed || isOffline
-      ? "rv-summary-failed"
+      ? "rv-result-failed"
       : isCapped
-      ? "rv-summary-capped"
-      : "rv-summary-ok";
+      ? "rv-result-capped"
+      : "rv-result-ok";
     const iconChar = isOk ? "✓" : isFailed || isOffline ? "✕" : isCapped ? "!" : "·";
     const title = isOk
       ? "Task completed"
@@ -891,62 +934,99 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       ? "Agent stopped"
       : "Cancelled";
 
-    // Single subtitle line with key stats (reason shown as a second
-    // muted line only when there is one — still compact).
     const subtitle = summaryStatsLine(summary);
-    const reasonLine = summary.reason
-      ? `<div class="rv-summary-reason">${escapeHtml(summary.reason)}</div>`
+    const privacyCount = summary.privacy?.count ?? 0;
+    const piiTypes = Object.keys(summary.privacy?.byType ?? {}).length;
+
+    const statsGrid = `
+      <div class="rv-result-stats">
+        <div class="rv-result-stat"><span class="rv-result-stat-v">${summary.iterations}</span><span class="rv-result-stat-k">Iterations</span></div>
+        <div class="rv-result-stat"><span class="rv-result-stat-v">${summary.actionsPlanned}</span><span class="rv-result-stat-k">Planned</span></div>
+        <div class="rv-result-stat"><span class="rv-result-stat-v">${summary.actionsExecuted}</span><span class="rv-result-stat-k">Executed</span></div>
+        <div class="rv-result-stat"><span class="rv-result-stat-v">${(summary.durationMs / 1000).toFixed(1)}s</span><span class="rv-result-stat-k">Time</span></div>
+        <div class="rv-result-stat"><span class="rv-result-stat-v">${privacyCount}</span><span class="rv-result-stat-k">Protected</span></div>
+        <div class="rv-result-stat"><span class="rv-result-stat-v">${piiTypes}</span><span class="rv-result-stat-k">PII types</span></div>
+      </div>
+    `;
+
+    const reasonBlock = summary.reason
+      ? `<div class="rv-result-reason"><span class="rv-result-reason-ic">ℹ</span><span>${escapeHtml(summary.reason)}</span></div>`
+      : "";
+
+    // Compact preview of the last few recorded activities.
+    const recent = detailedTimeline.slice(-6).reverse();
+    const timelineBlock = recent.length
+      ? `<div class="rv-result-timeline">${recent
+          .map(
+            (a) =>
+              `<div class="rv-result-tl-row"><span class="rv-result-tl-icon">${iconForActivity(a)}</span><span class="rv-result-tl-text">${escapeHtml(a.text)}</span></div>`
+          )
+          .join("")}</div>`
       : "";
 
     const card = document.createElement("div");
-    card.className = `rv-summary ${variantClass}`;
+    card.className = `rv-result-card ${variantClass}`;
     card.innerHTML = `
-      <div class="rv-summary-head">
-        <div class="rv-summary-icon">${iconChar}</div>
-        <div class="rv-summary-titles">
-          <div class="rv-summary-title">${escapeHtml(title)}</div>
-          <div class="rv-summary-sub">${escapeHtml(subtitle)}</div>
-          ${reasonLine}
-        </div>
-        <div class="rv-summary-tools">
-          <button type="button" class="rv-summary-copy" data-summary-copy title="Copy summary" aria-label="Copy summary">⧉</button>
-          <button type="button" class="rv-summary-toggle" data-summary-toggle title="Timeline &amp; sanitized data">Details</button>
+      <button type="button" class="rv-result-head" data-result-head aria-expanded="false" aria-controls="result-body">
+        <span class="rv-result-badge">${iconChar}</span>
+        <span class="rv-result-titles">
+          <span class="rv-result-title">${escapeHtml(title)}</span>
+          <span class="rv-result-sub">${escapeHtml(subtitle)}</span>
+        </span>
+        <span class="rv-result-chevron" aria-hidden="true">▾</span>
+      </button>
+      <div class="rv-result-body" id="result-body" hidden>
+        ${statsGrid}
+        ${reasonBlock}
+        ${timelineBlock}
+        <div class="rv-result-actions">
+          <button type="button" class="rv-result-btn" data-result-copy title="Copy summary">⧉ Copy summary</button>
+          <button type="button" class="rv-result-btn rv-result-btn-primary" data-result-full title="Full timeline &amp; sanitized data">Full details</button>
         </div>
       </div>
     `;
 
-    // Insert the summary card right after the redaction card (if any)
-    // so privacy info stays visible above the result.
+    // Append the summary card at the END of the feed so the result
+    // always appears BELOW the user message that triggered it. The
+    // page-level privacy card is pinned to the top separately.
     if (conversation) {
-      const redaction = conversation.querySelector(".rv-redaction-card");
-      if (redaction && redaction.nextSibling) {
-        conversation.insertBefore(card, redaction.nextSibling);
-      } else {
-        conversation.appendChild(card);
-      }
+      conversation.appendChild(card);
+    }
+
+    // Click anywhere on the compact header expands/collapses details.
+    const head = card.querySelector<HTMLButtonElement>("[data-result-head]");
+    const body = card.querySelector<HTMLElement>(".rv-result-body");
+    if (head && body) {
+      head.addEventListener("click", () => {
+        // `hidden` can be "until-found" in modern TS DOM typings — coerce.
+        const open = body.hidden === false ? false : true;
+        body.hidden = !open;
+        head.setAttribute("aria-expanded", open ? "true" : "false");
+        card.classList.toggle("rv-result-open", open);
+        if (open) scrollConversationToBottom(true);
+      });
     }
 
     // Copy button — copies a plain-text summary of the result.
-    const copyBtn = card.querySelector<HTMLButtonElement>("[data-summary-copy]");
+    const copyBtn = card.querySelector<HTMLButtonElement>("[data-result-copy]");
     if (copyBtn) {
       copyBtn.addEventListener("click", async (e) => {
         e.stopPropagation();
         const ok = await copySummaryToClipboard(summary);
-        copyBtn.textContent = ok ? "✓" : "✕";
+        copyBtn.textContent = ok ? "✓ Copied!" : "✕ Failed";
         copyBtn.title = ok ? "Copied!" : "Copy failed";
         setTimeout(() => {
-          copyBtn.textContent = "⧉";
+          copyBtn.textContent = "⧉ Copy summary";
           copyBtn.title = "Copy summary";
         }, 1400);
       });
     }
 
-    // Wire the "Details" toggle to open the full-screen details
-    // panel (timeline + sanitized data) inside the card.
-    const toggle = card.querySelector<HTMLButtonElement>("[data-summary-toggle]");
-    summaryToggleBtn = toggle;
-    if (toggle) {
-      toggle.addEventListener("click", () => {
+    // "Full details" opens the existing modal panel (Timeline + Data).
+    const fullBtn = card.querySelector<HTMLButtonElement>("[data-result-full]");
+    summaryToggleBtn = fullBtn;
+    if (fullBtn) {
+      fullBtn.addEventListener("click", () => {
         const isOpen = detailsPanel?.classList.contains("rv-open");
         if (isOpen) {
           closeDetails();
@@ -990,14 +1070,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       </div>
     `;
 
-    // Insert right after redaction card or at the end
+    // Append at the end of the feed (see showSummary).
     if (conversation) {
-      const redaction = conversation.querySelector(".rv-redaction-card");
-      if (redaction && redaction.nextSibling) {
-        conversation.insertBefore(card, redaction.nextSibling);
-      } else {
-        conversation.appendChild(card);
-      }
+      conversation.appendChild(card);
     }
 
     // Wire retry button to refocus input and clear current value for quick correction
@@ -1040,14 +1115,9 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       </div>
     `;
 
-    // Insert right after redaction card or at the end
+    // Append at the end of the feed (see showSummary).
     if (conversation) {
-      const redaction = conversation.querySelector(".rv-redaction-card");
-      if (redaction && redaction.nextSibling) {
-        conversation.insertBefore(card, redaction.nextSibling);
-      } else {
-        conversation.appendChild(card);
-      }
+      conversation.appendChild(card);
     }
 
     // Wire action button
@@ -1462,12 +1532,22 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     // Collapse the details panel and drop the stale toggle reference —
     // otherwise the panel keeps overlaying the card with old content
     // and the summary toggle points at a removed node.
+    if (processingRemovalTimer) {
+      clearTimeout(processingRemovalTimer);
+      processingRemovalTimer = null;
+    }
     closeDetails();
     summaryToggleBtn = null;
     detailedTimeline = [];
     lastSummary = null;
     if (conversation) {
+      // Remember whether a page-level privacy card was visible so it
+      // can be re-pinned after the reset (it must survive clearing).
+      const hadPrivacyCard = lastRedactionSummary !== null;
       conversation.innerHTML = emptyStateHTML();
+      if (hadPrivacyCard && lastRedactionSummary) {
+        setRedactionSummary(lastRedactionSummary);
+      }
     }
     // The card is back to an empty state — show the suggestion chips again.
     suggestRow?.classList.remove("rv-hidden");
@@ -1523,6 +1603,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     showValidationError,
     showSystemError,
     resetConversation,
+    stopProcessing,
     setSanitizedData,
     applyTheme,
     setAutoRedactState,
@@ -1548,17 +1629,17 @@ function chatHTML(): string {
             <div class="rv-chat-status-row">
               <span id="rv-chat-status-dot" class="rv-chat-dot rv-ready"></span>
               <span id="rv-chat-status">Ready</span>
+              <span class="rv-backend-pill rv-server" id="rv-backend-pill" title="Active reasoning backend">
+                <span class="rv-backend-icon">▤</span>
+                <span id="rv-backend-label">Server</span>
+              </span>
             </div>
           </div>
-        </div>
-        <div class="rv-backend-pill rv-server" id="rv-backend-pill" title="Active reasoning backend">
-          <span class="rv-backend-icon">▤</span>
-          <span id="rv-backend-label">Server</span>
-        </div>
-        <div class="rv-chat-controls">
-          <button class="rv-icon-btn rv-menu-btn" id="rv-menu-btn" type="button" title="Menu" aria-label="Open menu" aria-haspopup="true" aria-expanded="false">⋯</button>
-          <button class="rv-icon-btn" id="rv-minimize-btn" type="button" title="Minimize" aria-label="Minimize">−</button>
-          <button class="rv-icon-btn rv-close" id="rv-close-btn" type="button" title="Close" aria-label="Close">×</button>
+          <div class="rv-chat-controls">
+            <button class="rv-icon-btn rv-menu-btn" id="rv-menu-btn" type="button" title="Menu" aria-label="Open menu" aria-haspopup="true" aria-expanded="false">⋯</button>
+            <button class="rv-icon-btn" id="rv-minimize-btn" type="button" title="Minimize" aria-label="Minimize">−</button>
+            <button class="rv-icon-btn rv-close" id="rv-close-btn" type="button" title="Close" aria-label="Close">×</button>
+          </div>
         </div>
       </header>
 

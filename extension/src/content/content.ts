@@ -21,7 +21,6 @@ import { AgentSession } from "../agent/agent-session";
 import {
   buildChatUI,
   ChatUIHandles,
-  RedactionSummary,
   ValidationError,
   rvLogoUrl,
   upgradeLogoUrl,
@@ -237,10 +236,11 @@ const STYLE_FALLBACK = `
   .rv-chat-avatar{width:32px;height:32px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;letter-spacing:.5px;color:#fff;background:linear-gradient(135deg,#5b6bff,#22d3a0);border-radius:8px;box-shadow:0 2px 8px rgba(91,107,255,.4);flex-shrink:0;overflow:hidden}
   .rv-chat-avatar img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;user-select:none;pointer-events:none;-webkit-user-drag:none}
   .rv-chat-title{font-size:12.5px;font-weight:600;color:#e6ecff;letter-spacing:-.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .rv-chat-status-row{display:flex;align-items:center;gap:5px;font-size:10.5px;color:#94a3b8;margin-top:1px}
+  .rv-chat-brand-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+  .rv-chat-status-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px 6px;font-size:10.5px;color:#94a3b8;margin-top:1px;min-width:0}
   .rv-chat-dot{width:6px;height:6px;border-radius:50%;display:inline-block;flex-shrink:0}
   .rv-chat-dot.rv-ready{background:#22d3a0;box-shadow:0 0 6px rgba(34,211,160,.7)}
-  .rv-backend-pill{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;font-size:10px;font-weight:600;border-radius:999px;background:rgba(91,107,255,.18);color:#e6ecff;border:1px solid rgba(91,107,255,.18);letter-spacing:.2px;flex-shrink:0}
+  .rv-backend-pill{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;font-size:9.5px;font-weight:600;border-radius:999px;background:rgba(91,107,255,.18);color:#e6ecff;border:1px solid rgba(91,107,255,.18);letter-spacing:.2px;flex-shrink:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
   .rv-backend-pill .rv-backend-dot{width:5px;height:5px;border-radius:50%;background:#e6ecff}
   .rv-chat-controls{display:flex;gap:4px;flex-shrink:0}
   .rv-icon-btn{width:24px;height:24px;display:flex;align-items:center;justify-content:center;background:0 0;border:1px solid transparent;border-radius:6px;color:#94a3b8;font-size:14px;line-height:1;cursor:pointer}
@@ -500,13 +500,11 @@ async function buildPanel(): Promise<void> {
 
   const sessionSignal = { cancelled: false };
 
-  // Render the initial redaction summary using whatever the privacy
-  // firewall found on the first page scan.
-  const initialSummary: RedactionSummary = session.getRedactionSummary(false);
-  ui.setRedactionSummary(initialSummary);
-
   ui.setStatus("ready", "Ready");
+  // Start from a clean conversation, then pin the page-level privacy
+  // status card to the TOP of the feed so it is visible on open.
   ui.clearConversation();
+  ui.setRedactionSummary(session.getRedactionSummary(false));
   ui.setBackend("Server"); // replaced with the active LLM provider on first plan
 
   ui.onSend(async (text) => {
@@ -537,6 +535,9 @@ async function buildPanel(): Promise<void> {
       // "paused" means the executor still couldn't resolve the value.
       // Re-enable input so the user can try again with a different reply.
       if (finalPhase === "paused") {
+        // Stop the live "Working on…" spinner so it isn't stuck forever
+        // while the agent waits for the user's answer.
+        ui.stopProcessing();
         ui.setStatus("thinking", "Waiting for input…");
         ui.setInputEnabled(true);
         // No summary card for paused — just leave the missing_info
