@@ -874,7 +874,8 @@ export class AgentSession {
   private async attachVisualSummary(sanitizedDOM: SanitizedPageDOM, iteration: number): Promise<void> {
     if (!this.privacyFirewall.isEnabled()) return;
     try {
-      const result = await withTimeout(perceivePage(), 7000);
+      // Fast perception (<15ms) so request dispatches to server LLM immediately
+      const result = await withTimeout(perceivePage(false), 500);
       const visualRegions = result.sensitiveDataMap.regions
         .filter((region) => region.source === "ocr" || region.source === "cv" || region.boundingBox)
         .slice(0, 20);
