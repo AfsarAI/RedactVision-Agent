@@ -61,6 +61,7 @@ Rules:
 1. Always pick a `target` selector from SANITIZED_DOM.
    Prefer selector, id, or name from SANITIZED_DOM elements.
 2. For TYPE actions:
+   - Instructions for self: Focus the element, completely clear any existing/prefilled text or placeholder residue, and insert only the target value.
    - If the user specifies literal text to type (e.g. "type hello", "enter test"), extract that text as `value`.
      If no specific field is named, target the most relevant text input or textarea (e.g. message, comment, notes, or first editable text field).
    - If the user asks to fill a form or enter their details:

@@ -382,6 +382,80 @@ export async function visualHumanClick(el: Element): Promise<void> {
 }
 
 /**
+ * Safely replaces the entire value of an input or textarea element.
+ * Compatible with Google Forms, React, Vue, Closure, and vanilla DOM inputs.
+ * Selects and erases existing pre-filled text or placeholder residue before inserting new text.
+ */
+export function setAndReplaceInputValue(
+  target: HTMLElement | string,
+  valueToInput: string
+): void {
+  const el = typeof target === "string" ? document.querySelector(target) : target;
+  if (!el) throw new Error(`Target element not found: ${target}`);
+
+  if (el instanceof HTMLElement) {
+    // 1. Focus the input element
+    el.focus();
+
+    // 2. Select existing content (handles visual highlight & native cursor state)
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+      if (typeof el.select === "function") {
+        el.select();
+      } else if (typeof el.setSelectionRange === "function") {
+        el.setSelectionRange(0, el.value.length);
+      }
+
+      // 3. Bypass React/Closure framework value property overrides
+      const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        "value"
+      )?.set;
+
+      const nativeTextAreaValueSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      )?.set;
+
+      const setter = el.tagName === "TEXTAREA" ? nativeTextAreaValueSetter : nativeInputValueSetter;
+
+      if (setter) {
+        setter.call(el, valueToInput);
+      } else {
+        el.value = valueToInput;
+      }
+
+      // 4. Dispatch Input, Change, and Blur events with bubbles enabled
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: valueToInput,
+        })
+      );
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+    } else if (el.isContentEditable || el.getAttribute("contenteditable") === "true") {
+      const selection = window.getSelection();
+      if (selection) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      document.execCommand?.("insertText", false, valueToInput);
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertText",
+          data: valueToInput,
+        })
+      );
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  }
+}
+
+/**
  * Full visual human-like type into an element:
  * 1. Move cursor to element & click to focus
  * 2. Show "Typing..." badge
@@ -398,7 +472,7 @@ export async function visualHumanType(
   el.classList.add("rv-element-focus-highlight");
   setCursorBadge(`Typing…`);
 
-  // 1. Try CDP typing first (direct browser engine insertion into focused element)
+  // 1. Try CDP typing first (direct browser engine insertion with Cmd+A + Backspace)
   let cdpSuccess = false;
   if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
     try {
@@ -416,43 +490,8 @@ export async function visualHumanType(
     }
   }
 
-  // 2. High-fidelity DOM fallback if CDP was not available or needs DOM sync
-  const isInput = el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
-
-  if (isInput) {
-    const input = el as HTMLInputElement | HTMLTextAreaElement;
-    input.focus();
-
-    if (!cdpSuccess) {
-      // Trigger React's internal value tracker via native prototype setter
-      const nativeSetter = input instanceof HTMLInputElement
-        ? Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set
-        : Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set;
-
-      if (nativeSetter) {
-        nativeSetter.call(input, value);
-      } else {
-        input.value = value;
-      }
-
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  } else if (el.isContentEditable || el.getAttribute("contenteditable") === "true" || el.id === "prompt-textarea") {
-    el.focus();
-    if (!cdpSuccess) {
-      document.execCommand?.("insertText", false, value);
-      el.dispatchEvent(
-        new InputEvent("input", {
-          bubbles: true,
-          cancelable: true,
-          inputType: "insertText",
-          data: value,
-        })
-      );
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-  }
+  // 2. High-fidelity DOM fallback & framework value replacement
+  setAndReplaceInputValue(el, value);
 
   // Short human pause after typing
   await new Promise((r) => setTimeout(r, 150));

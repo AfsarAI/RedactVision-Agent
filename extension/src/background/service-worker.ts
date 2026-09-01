@@ -386,7 +386,41 @@ async function handleCDPType(
       await new Promise((res) => setTimeout(res, 60));
     }
 
-    // Use Input.insertText for authentic, clean insertion into rich text / React editors
+    // 2. Select All (Cmd+A / Ctrl+A) to clear any pre-filled or placeholder residue
+    const isMac = typeof navigator !== "undefined" && navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+    const modifier = isMac ? 8 : 2; // 8 = Command key (Mac), 2 = Control key (Windows/Linux)
+
+    await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+      type: "rawKeyDown",
+      windowsVirtualKeyCode: 65,
+      code: "KeyA",
+      key: "a",
+      modifiers: modifier,
+    });
+    await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      windowsVirtualKeyCode: 65,
+      code: "KeyA",
+      key: "a",
+    });
+
+    // 3. Erase selected text (Backspace)
+    await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+      type: "rawKeyDown",
+      windowsVirtualKeyCode: 8,
+      code: "Backspace",
+      key: "Backspace",
+    });
+    await chrome.debugger.sendCommand(target, "Input.dispatchKeyEvent", {
+      type: "keyUp",
+      windowsVirtualKeyCode: 8,
+      code: "Backspace",
+      key: "Backspace",
+    });
+
+    await new Promise((res) => setTimeout(res, 40));
+
+    // 4. Use Input.insertText for authentic, clean insertion into rich text / React editors
     await chrome.debugger.sendCommand(target, "Input.insertText", {
       text,
     });
