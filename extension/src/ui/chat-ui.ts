@@ -1584,14 +1584,14 @@ function chatHTML(): string {
         <!-- Suggestion chips moved here from the old empty state -->
         <div class="rv-suggest-row" id="rv-suggest-row">
           <span class="rv-suggest-label">Try:</span>
-          <button type="button" class="rv-chip-suggest" data-suggest="scroll down">
-            <span class="rv-chip-ic">↓</span> scroll down
+          <button type="button" class="rv-chip-suggest" data-suggest="fill the signup form">
+            <span class="rv-chip-ic">📝</span> Fill signup form
           </button>
-          <button type="button" class="rv-chip-suggest" data-suggest="click submit">
-            <span class="rv-chip-ic">↖</span> click submit
+          <button type="button" class="rv-chip-suggest" data-suggest="enter my email in the email field">
+            <span class="rv-chip-ic">✉️</span> Enter my email
           </button>
-          <button type="button" class="rv-chip-suggest" data-suggest="fill the email">
-            <span class="rv-chip-ic">✎</span> fill the email
+          <button type="button" class="rv-chip-suggest" data-suggest="submit the form">
+            <span class="rv-chip-ic">🔒</span> Submit safely
           </button>
         </div>
         <div class="rv-input-pill" id="rv-input-pill">
