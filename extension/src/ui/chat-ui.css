@@ -352,13 +352,19 @@
   border-color: rgba(255, 90, 122, 0.4);
 }
 
-/* ---------- Conversation ---------- */
+/* ---------- Conversation ----------
+   Top-grow layout: content is anchored to the TOP with a visible
+   gap (like Claude's chat) and fills downward as it grows. It is
+   NOT pinned to the bottom edge; auto-scroll only engages when the
+   content actually overflows (see scrollConversationToBottom in
+   chat-ui.ts, which also respects manual scroll-up). */
 .rv-conversation {
   flex: 1;
   overflow-y: auto;
-  padding: 10px 10px 6px 18px;
+  padding: 26px 14px 10px;
   display: flex;
   flex-direction: column;
+  justify-content: flex-start;
   gap: 2px;
   scroll-behavior: smooth;
   min-height: 0; /* allow flex shrink */
@@ -806,32 +812,23 @@
   font-size: 12px;
 }
 
-/* ---------- Redaction card ---------- */
+/* ---------- Redaction card — slim single-line privacy status ---------- */
 .rv-redaction-card {
-  background:
-    linear-gradient(135deg, rgba(34, 211, 160, 0.10), rgba(91, 107, 255, 0.06));
-  border: 1px solid rgba(34, 211, 160, 0.30);
-  border-radius: var(--rv-radius-sm);
-  padding: 10px 12px;
+  background: rgba(34, 211, 160, 0.07);
+  border: 1px solid rgba(34, 211, 160, 0.22);
+  border-radius: 999px;
+  padding: 5px 12px;
+  margin: 4px 2px;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.rv-redaction-header {
-  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  font-size: 10.5px;
+  width: fit-content;
+  max-width: 100%;
 }
-.rv-redaction-shield {
-  font-size: 14px;
-}
-.rv-redaction-title {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--rv-text);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  flex: 1;
+.rv-redaction-card:empty {
+  display: none;
 }
 .rv-redaction-state {
   font-size: 10px;
@@ -853,22 +850,22 @@
 .rv-redaction-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
+  gap: 4px;
 }
 .rv-redaction-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 8px;
+  padding: 2px 7px;
   background: rgba(15, 23, 42, 0.55);
   border: 1px solid rgba(34, 211, 160, 0.30);
   border-radius: 999px;
-  font-size: 10.5px;
+  font-size: 10px;
   font-family: var(--rv-mono);
   color: #b6f5dd;
 }
 .rv-redaction-icon {
-  font-size: 11px;
+  font-size: 10px;
 }
 .rv-redaction-type {
   letter-spacing: -0.3px;
@@ -880,7 +877,7 @@
   background: rgba(34, 211, 160, 0.30);
   padding: 0 5px;
   border-radius: 6px;
-  min-width: 14px;
+  min-width: 13px;
   text-align: center;
 }
 .rv-redaction-empty {
@@ -888,21 +885,16 @@
   color: var(--rv-text-dim);
   font-style: italic;
 }
-.rv-redaction-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 10.5px;
-}
 .rv-redaction-count-total {
   color: var(--rv-text-dim);
+  font-weight: 600;
+  white-space: nowrap;
 }
 .rv-redaction-safety {
   font-weight: 600;
   font-family: var(--rv-mono);
   font-size: 10px;
+  white-space: nowrap;
 }
 .rv-redaction-safety.rv-safe {
   color: #6ee7b7;
@@ -915,79 +907,104 @@
  *   Polished UI components — phase 4
  * ============================================================ */
 
-/* ---------- Live processing timeline (the "working on it" view) ---------- */
+/* ---------- Working status — ONE collapsible line ----------
+   [spinner] Working on: <step>   2.1s   ▾
+   Clicking the line expands a slim detail list below it. */
 .rv-processing {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  margin: 8px 14px 0;
-  background: rgba(91, 107, 255, 0.12);
-  border: 1px solid rgba(91, 107, 255, 0.28);
-  border-radius: var(--rv-radius-sm);
+  margin: 6px 2px 0;
   animation: rv-msg-in 0.25s ease-out;
 }
-.rv-processing-header {
+.rv-working-line {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  color: var(--rv-text);
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer !important;
+  font-family: inherit;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s;
 }
-.rv-processing-header .rv-processing-spinner {
+.rv-working-line:hover {
+  background: rgba(91, 107, 255, 0.08);
+  border-color: var(--rv-border);
+}
+.rv-processing-spinner {
   width: 12px;
   height: 12px;
   border: 2px solid var(--rv-accent-soft);
   border-top-color: var(--rv-accent);
   border-radius: 50%;
   animation: rv-spin 0.8s linear infinite;
+  flex-shrink: 0;
 }
-.rv-processing-header .rv-processing-elapsed {
+.rv-working-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--rv-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.rv-working-step {
+  color: var(--rv-text-dim);
+  font-weight: 400;
+}
+.rv-working-line .rv-processing-elapsed {
   margin-left: auto;
   font-size: 10px;
   font-weight: 500;
-  color: var(--rv-text-dim);
-  text-transform: none;
-  letter-spacing: 0;
+  color: var(--rv-text-mute);
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
-.rv-processing-current {
-  font-size: 12.5px;
-  color: var(--rv-text);
-  font-weight: 500;
+.rv-working-chevron {
+  font-size: 10px;
+  color: var(--rv-text-mute);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.rv-processing.rv-expanded .rv-working-chevron {
+  transform: rotate(180deg);
+}
+/* Collapsible detail panel — slim list, not bulky boxes */
+.rv-working-detail {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  margin: 2px 0 4px 12px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--rv-border);
+}
+.rv-processing.rv-expanded .rv-working-detail {
   display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.rv-processing-current::before {
-  content: "↓";
-  color: var(--rv-accent);
-  font-weight: 700;
 }
 .rv-processing-steps {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 2px;
 }
 .rv-processing-step {
   display: flex;
   align-items: center;
   gap: 7px;
-  font-size: 11.5px;
+  font-size: 11px;
   color: var(--rv-text-dim);
-  padding: 3px 0;
+  padding: 2px 0;
 }
 .rv-processing-step .rv-step-icon {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 9px;
   flex-shrink: 0;
 }
 .rv-processing-step.rv-done {
@@ -1003,140 +1020,173 @@
 .rv-processing-step.rv-active .rv-step-icon {
   animation: rv-blink 1.1s ease-in-out infinite;
 }
+.rv-working-privacy-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--rv-text-dim);
+}
+.rv-working-privacy-icon {
+  font-size: 11px;
+}
+.rv-working-privacy-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 
-/* ---------- Completion summary card (modern result panel) ---------- */
+/* ---------- Completion card — compact, subtle bordered ----------
+   Checkmark + title + ONE stats subtitle line + copy/details tools.
+   No large colored backgrounds — just a subtle bordered card. */
 .rv-summary {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
-  margin: 10px 14px;
-  border-radius: 14px;
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(34, 211, 160, 0.14), transparent 70%),
-    linear-gradient(160deg, rgba(34, 211, 160, 0.12), rgba(91, 107, 255, 0.07) 55%, rgba(10, 15, 32, 0.45));
-  border: 1px solid rgba(34, 211, 160, 0.38);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 6px 2px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.35);
+  border: 1px solid var(--rv-border);
   animation: rv-msg-in 0.3s ease-out;
 }
 .rv-summary.rv-summary-failed {
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(255, 90, 122, 0.16), transparent 70%),
-    linear-gradient(160deg, rgba(255, 90, 122, 0.12), rgba(91, 107, 255, 0.05) 55%, rgba(10, 15, 32, 0.45));
-  border-color: rgba(255, 90, 122, 0.45);
+  border-color: rgba(255, 90, 122, 0.35);
 }
 .rv-summary.rv-summary-capped {
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(245, 158, 11, 0.16), transparent 70%),
-    linear-gradient(160deg, rgba(245, 158, 11, 0.12), rgba(91, 107, 255, 0.05) 55%, rgba(10, 15, 32, 0.45));
-  border-color: rgba(245, 158, 11, 0.45);
+  border-color: rgba(245, 158, 11, 0.40);
 }
 .rv-summary.rv-summary-validation {
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(251, 146, 60, 0.18), transparent 70%),
-    linear-gradient(160deg, rgba(251, 146, 60, 0.14), rgba(245, 158, 11, 0.08) 55%, rgba(10, 15, 32, 0.45));
-  border-color: rgba(251, 146, 60, 0.50);
+  border-color: rgba(251, 146, 60, 0.45);
 }
 .rv-summary-head {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
 }
 .rv-summary-icon {
-  width: 36px;
-  height: 36px;
+  width: 22px;
+  height: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 11px;
-  background: linear-gradient(135deg, rgba(34, 211, 160, 0.40), rgba(34, 211, 160, 0.15));
+  border-radius: 50%;
+  background: rgba(34, 211, 160, 0.16);
+  border: 1px solid rgba(34, 211, 160, 0.40);
   color: #6ee7b7;
-  font-size: 18px;
+  font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
-  box-shadow: 0 4px 14px rgba(34, 211, 160, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  margin-top: 1px;
+}
+.rv-summary-ok .rv-summary-icon {
+  background: rgba(34, 211, 160, 0.16);
+  border-color: rgba(34, 211, 160, 0.40);
+  color: #6ee7b7;
 }
 .rv-summary-failed .rv-summary-icon {
-  background: linear-gradient(135deg, rgba(255, 90, 122, 0.40), rgba(255, 90, 122, 0.15));
+  background: rgba(255, 90, 122, 0.14);
+  border-color: rgba(255, 90, 122, 0.40);
   color: #ffb3c4;
-  box-shadow: 0 4px 14px rgba(255, 90, 122, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 .rv-summary-capped .rv-summary-icon {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.40), rgba(245, 158, 11, 0.15));
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.42);
   color: #fcd34d;
-  box-shadow: 0 4px 14px rgba(245, 158, 11, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.15);
 }
 .rv-summary-validation .rv-summary-icon {
-  background: linear-gradient(135deg, rgba(251, 146, 60, 0.45), rgba(251, 146, 60, 0.18));
+  background: rgba(251, 146, 60, 0.16);
+  border-color: rgba(251, 146, 60, 0.45);
   color: #fdba74;
-  box-shadow: 0 4px 14px rgba(251, 146, 60, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+}
+.rv-summary-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .rv-summary-title {
-  font-size: 14.5px;
+  font-size: 12.5px;
   font-weight: 700;
   color: var(--rv-text);
   letter-spacing: -0.1px;
 }
-.rv-summary-message {
-  font-size: 12.5px;
+.rv-summary-sub {
+  font-size: 11px;
   color: var(--rv-text-dim);
-  line-height: 1.55;
+  line-height: 1.45;
 }
-.rv-summary-stats {
+.rv-summary-reason {
+  font-size: 10.5px;
+  color: var(--rv-text-mute);
+  line-height: 1.45;
+  margin-top: 1px;
+}
+.rv-summary-tools {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.rv-summary-stat {
-  display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 11px;
-  border-radius: 10px;
-  font-size: 10.5px;
-  font-weight: 600;
-  background: rgba(10, 15, 32, 0.60);
+  flex-shrink: 0;
+}
+.rv-summary-copy {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
   border: 1px solid var(--rv-border);
-  color: var(--rv-text);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-.rv-summary-stat .rv-summary-stat-icon {
-  font-size: 11px;
-  opacity: 0.9;
-}
-.rv-summary-stat .rv-summary-stat-label {
+  border-radius: 7px;
   color: var(--rv-text-dim);
-  font-weight: 500;
+  font-size: 12px;
+  cursor: pointer !important;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.rv-summary-copy:hover {
+  background: rgba(91, 107, 255, 0.14);
+  color: var(--rv-text);
+  border-color: rgba(91, 107, 255, 0.45);
 }
 .rv-summary-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  align-self: flex-start;
-  background: rgba(91, 107, 255, 0.14);
-  border: 1px solid rgba(91, 107, 255, 0.35);
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 11px;
-  color: #c7d2fe;
+  gap: 4px;
+  background: transparent;
+  border: 1px solid var(--rv-border);
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: 10.5px;
+  color: var(--rv-text-dim);
   font-weight: 600;
+  font-family: inherit;
   /* !important: the card is injected into the host page (no shadow
      root), so host CSS like `button { cursor: default }` can win —
      force the hand pointer on every interactive control. */
   cursor: pointer !important;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
+.rv-summary-toggle::after {
+  content: "▾";
+  font-size: 9px;
+  transition: transform 0.2s;
+}
+.rv-summary-toggle.rv-summary-toggle-open::after {
+  transform: rotate(180deg);
+}
+
+/* Validation error details (slim rows, kept from previous design) */
 
 /* Validation error details */
 .rv-validation-details {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  background: rgba(10, 15, 32, 0.60);
+  gap: 5px;
+  background: rgba(10, 15, 32, 0.45);
   border: 1px solid rgba(251, 146, 60, 0.25);
   border-radius: 10px;
-  padding: 10px 12px;
+  padding: 7px 10px;
 }
 .rv-validation-row {
   display: flex;
@@ -1188,31 +1238,22 @@
   box-shadow: 0 2px 8px rgba(251, 146, 60, 0.30);
 }
 .rv-summary-toggle:hover {
-  background: rgba(91, 107, 255, 0.26);
-  color: white;
-  border-color: rgba(91, 107, 255, 0.55);
+  background: rgba(91, 107, 255, 0.14);
+  color: var(--rv-text);
+  border-color: rgba(91, 107, 255, 0.45);
 }
 .rv-chat.rv-light .rv-summary {
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(34, 211, 160, 0.12), transparent 70%),
-    linear-gradient(160deg, rgba(34, 211, 160, 0.10), rgba(91, 107, 255, 0.06) 55%, rgba(255, 255, 255, 0.65));
-  box-shadow: 0 8px 24px rgba(30, 41, 80, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(91, 107, 255, 0.22);
 }
 .rv-chat.rv-light .rv-summary.rv-summary-failed {
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(255, 90, 122, 0.12), transparent 70%),
-    linear-gradient(160deg, rgba(255, 90, 122, 0.10), rgba(91, 107, 255, 0.04) 55%, rgba(255, 255, 255, 0.65));
+  border-color: rgba(255, 90, 122, 0.40);
 }
 .rv-chat.rv-light .rv-summary.rv-summary-capped {
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(245, 158, 11, 0.14), transparent 70%),
-    linear-gradient(160deg, rgba(245, 158, 11, 0.10), rgba(91, 107, 255, 0.04) 55%, rgba(255, 255, 255, 0.65));
+  border-color: rgba(245, 158, 11, 0.45);
 }
 .rv-chat.rv-light .rv-summary.rv-summary-validation {
-  background:
-    radial-gradient(400px 140px at 100% 0%, rgba(251, 146, 60, 0.16), transparent 70%),
-    linear-gradient(160deg, rgba(251, 146, 60, 0.12), rgba(245, 158, 11, 0.05) 55%, rgba(255, 255, 255, 0.70));
-  border-color: rgba(251, 146, 60, 0.60);
+  border-color: rgba(251, 146, 60, 0.50);
 }
 .rv-chat.rv-light .rv-validation-details {
   background: rgba(255, 255, 255, 0.75);
@@ -1221,60 +1262,70 @@
   color: #9a3412;
   background: rgba(251, 146, 60, 0.20);
 }
-.rv-chat.rv-light .rv-summary-stat {
-  background: rgba(255, 255, 255, 0.80);
-}
 .rv-chat.rv-light .rv-summary-toggle {
-  background: rgba(91, 107, 255, 0.10);
+  background: transparent;
   color: #3d4fd8;
   border-color: rgba(91, 107, 255, 0.30);
 }
 .rv-chat.rv-light .rv-summary-toggle:hover {
-  background: rgba(91, 107, 255, 0.20);
+  background: rgba(91, 107, 255, 0.12);
   color: #2a37b8;
 }
-.rv-summary-toggle::after {
-  content: "▾";
-  font-size: 9px;
-  transition: transform 0.2s;
-}
-.rv-summary-toggle.rv-summary-toggle-open::after {
-  transform: rotate(180deg);
+.rv-chat.rv-light .rv-summary-copy {
+  color: #3d4fd8;
 }
 
-/* ---------- Composer ---------- */
+/* ---------- Composer — Gemini/Claude-style rounded pill ----------
+   [+] (textarea) (↑ send / ■ stop) with a muted disclaimer below. */
 .rv-composer {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
-  padding: 8px 10px 9px;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px 7px;
   border-top: 1px solid rgba(255, 255, 255, 0.10);
   background: rgba(7, 11, 24, 0.45);
   flex-shrink: 0;
 }
 
+.rv-input-pill {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  background: rgba(15, 23, 42, 0.45);
+  border: 1px solid var(--rv-border-strong);
+  border-radius: 24px;
+  padding: 5px 6px 5px 8px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.rv-input-pill:focus-within {
+  border-color: var(--rv-accent);
+  box-shadow: 0 0 0 3px rgba(91, 107, 255, 0.15);
+}
+.rv-chat.rv-light .rv-input-pill {
+  background: rgba(255, 255, 255, 0.60);
+}
+
 .rv-input {
   flex: 1;
   resize: none;
-  background: rgba(15, 23, 42, 0.62);
+  background: transparent;
   color: var(--rv-text);
-  border: 1px solid var(--rv-border);
-  border-radius: 10px;
-  padding: 9px 12px;
+  border: none;
+  border-radius: 0;
+  padding: 6px 2px;
   font-family: inherit;
   font-size: 13px;
-  line-height: 1.4;
-  min-height: 38px;
-  max-height: 160px;
+  line-height: 1.45;
+  min-height: 24px;
+  max-height: 120px;
   overflow-y: hidden;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s, height 0.12s ease;
+  transition: height 0.12s ease;
 }
 .rv-input:focus {
-  border-color: var(--rv-border-strong);
-  box-shadow: 0 0 0 3px rgba(91, 107, 255, 0.15);
-  /* Explicit dark background prevents host-page CSS bleed (e.g. test-site input:focus{background:white}) */
-  background: rgba(15, 23, 42, 0.85);
+  border: none;
+  box-shadow: none;
+  background: transparent;
 }
 .rv-input:disabled {
   opacity: 0.5;
@@ -1284,125 +1335,89 @@
   color: var(--rv-text-mute);
 }
 
+.rv-attach-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--rv-text-dim);
+  cursor: not-allowed;
+  opacity: 0.5;
+  flex-shrink: 0;
+  margin-bottom: 1px;
+}
+
+/* Circular send / stop button — same element, two modes. */
 .rv-send-btn {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: linear-gradient(135deg, #5b6bff, #4554e6);
   color: white;
   border: none;
-  border-radius: 10px;
+  border-radius: 50%;
   cursor: pointer !important;
   font-size: 14px;
-  transition: transform 0.1s, box-shadow 0.15s, opacity 0.15s;
+  transition: transform 0.1s, box-shadow 0.15s, background 0.15s;
   flex-shrink: 0;
   box-shadow: 0 2px 8px rgba(91, 107, 255, 0.30);
 }
-.rv-send-btn:hover:not(:disabled) {
+.rv-send-btn:hover {
   transform: translateY(-1px);
   box-shadow: 0 4px 14px rgba(91, 107, 255, 0.55);
 }
-.rv-send-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-
-.rv-cancel-btn {
-  background: rgba(255, 90, 122, 0.10);
-  color: #ff7a95;
-  border: 1px solid rgba(255, 90, 122, 0.30);
-  border-radius: 8px;
-  padding: 7px 14px;
-  font-size: 11.5px;
-  font-weight: 600;
-  font-family: inherit;
-  cursor: pointer !important;
-  flex-shrink: 0;
-  transition: background 0.15s, color 0.15s, opacity 0.15s;
-}
-.rv-cancel-btn:hover:not(:disabled) {
-  background: rgba(255, 90, 122, 0.24);
-  color: #ffb3c4;
-}
-.rv-cancel-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-.rv-chat.rv-light .rv-cancel-btn {
-  color: #be123c;
-  background: rgba(255, 90, 122, 0.08);
-}
-
-/* ----- Composer (compact single-line box, grows only when needed) ----- */
-.rv-input-wrap {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  background: rgba(15, 23, 42, 0.45);
-  border: 1px solid var(--rv-border-strong);
-  border-radius: 12px;
-  padding: 7px 9px;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.rv-input-wrap:focus-within {
-  border-color: var(--rv-accent);
-  box-shadow: 0 0 0 3px rgba(91, 107, 255, 0.15);
-}
-.rv-chat.rv-light .rv-input-wrap {
-  background: rgba(255, 255, 255, 0.60);
-}
-.rv-input {
-  flex: 1;
-  resize: none;
-  background: transparent;
-  color: var(--rv-text);
-  border: none;
-  border-radius: 0;
-  padding: 0;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.45;
-  max-height: 100px;
-  outline: none;
-}
-.rv-input:focus {
-  border: none;
-  box-shadow: none;
-  background: transparent;
-}
-.rv-composer-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.rv-attach-btn {
-  width: 24px;
-  height: 24px;
+.rv-send-btn .rv-send-icon,
+.rv-send-btn .rv-stop-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: transparent;
-  border: none;
-  border-radius: 7px;
-  font-size: 14px;
-  cursor: not-allowed;
-  opacity: 0.45;
-  filter: grayscale(1);
+  line-height: 1;
 }
-.rv-composer-row .rv-cancel-btn {
-  margin-right: auto;
-  padding: 5px 11px;
-  font-size: 11px;
+/* Stop mode: square icon, muted red — cancels the running agent. */
+.rv-send-btn .rv-stop-icon {
+  display: none;
+  font-size: 10px;
 }
-.rv-send-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  font-size: 13px;
+.rv-send-btn.rv-stop {
+  background: rgba(255, 90, 122, 0.18);
+  border: 1px solid rgba(255, 90, 122, 0.55);
+  color: #ffb3c4;
+  box-shadow: none;
+}
+.rv-send-btn.rv-stop:hover {
+  background: rgba(255, 90, 122, 0.32);
+  box-shadow: 0 2px 10px rgba(255, 90, 122, 0.35);
+}
+.rv-send-btn.rv-stop .rv-send-icon {
+  display: none;
+}
+.rv-send-btn.rv-stop .rv-stop-icon {
+  display: flex;
+}
+.rv-chat.rv-light .rv-send-btn.rv-stop {
+  color: #be123c;
+  background: rgba(255, 90, 122, 0.14);
+}
+
+/* Disclaimer — small, muted, centered under the input pill. */
+.rv-disclaimer {
+  text-align: center;
+  font-size: 9.5px;
+  color: var(--rv-text-mute);
+  letter-spacing: 0.1px;
+  user-select: none;
+  padding-bottom: 1px;
+}
+.rv-chat.rv-light .rv-disclaimer {
+  color: #64748b;
 }
 
 /* ----- Footer statusbar (brand + status + actions) ----- */
@@ -1812,21 +1827,14 @@
 .rv-chat.rv-light .rv-redaction-card {
   background: linear-gradient(135deg, rgba(34, 211, 160, 0.12), rgba(91, 107, 255, 0.06));
 }
-.rv-chat.rv-light .rv-redaction-pill,
-.rv-chat.rv-light .rv-summary-stat {
+.rv-chat.rv-light .rv-redaction-pill {
   background: rgba(255, 255, 255, 0.65);
 }
 .rv-chat.rv-light .rv-processing {
-  background: rgba(91, 107, 255, 0.07);
+  background: transparent;
 }
-.rv-chat.rv-light .rv-summary {
-  background: rgba(34, 211, 160, 0.10);
-}
-.rv-chat.rv-light .rv-summary.rv-summary-failed {
-  background: rgba(255, 90, 122, 0.10);
-}
-.rv-chat.rv-light .rv-summary.rv-summary-capped {
-  background: rgba(245, 158, 11, 0.12);
+.rv-chat.rv-light .rv-working-detail {
+  border-left-color: rgba(91, 107, 255, 0.25);
 }
 .rv-chat.rv-light .rv-backend-pill {
   background: rgba(255, 255, 255, 0.55);

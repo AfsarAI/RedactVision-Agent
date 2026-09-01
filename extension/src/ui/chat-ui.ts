@@ -204,7 +204,6 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   const conversation = root.querySelector<HTMLElement>("#rv-conversation");
   const input = root.querySelector<HTMLTextAreaElement>("#rv-input");
   const sendBtn = root.querySelector<HTMLButtonElement>("#rv-send-btn");
-  const cancelBtn = root.querySelector<HTMLButtonElement>("#rv-cancel-btn");
   const minimizeBtn = root.querySelector<HTMLElement>("#rv-minimize-btn");
   const closeBtn = root.querySelector<HTMLElement>("#rv-close-btn");
   const dragHandle = root.querySelector<HTMLElement>("[data-rv-drag-handle]");
@@ -233,11 +232,31 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   let themeToggleHandler: ((next: "dark" | "light") => void) | null = null;
   let autoRedactHandler: ((enabled: boolean) => void) | null = null;
 
+  // Latest redaction summary — feeds the working-line privacy detail.
+  let lastRedactionSummary: RedactionSummary | null = null;
+
   // ---- Composer ----
+
+  // Send ↔ Stop mode. While the agent is running, the single circular
+  // button on the right becomes a stop button wired to cancelHandler.
+  let isProcessing = false;
+
+  function setSendMode(stop: boolean): void {
+    isProcessing = stop;
+    if (sendBtn) {
+      sendBtn.classList.toggle("rv-stop", stop);
+      sendBtn.setAttribute("aria-label", stop ? "Stop" : "Send");
+      sendBtn.setAttribute("title", stop ? "Stop agent" : "Send");
+    }
+  }
 
   function submitText(text: string): void {
     const t = text.trim();
     if (!t) return;
+    // While the agent is running the button is a stop button — Enter
+    // must not queue a second task (parity with the old disabled-input
+    // behaviour; the input itself is disabled during a run anyway).
+    if (isProcessing) return;
     if (input) {
       input.value = "";
       input.style.height = "";
@@ -248,6 +267,10 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
 
   if (sendBtn) {
     sendBtn.addEventListener("click", () => {
+      if (isProcessing) {
+        cancelHandler?.();
+        return;
+      }
       if (input) submitText(input.value);
     });
   }
@@ -260,25 +283,19 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       }
     });
 
-    // Auto-grow: starts single-line (~38-44px) and grows dynamically
-    // up to 160px, switching to internal scroll when capped.
+    // Auto-grow: starts single-line (~24px) and grows dynamically
+    // up to 120px, switching to internal scroll when capped.
     const autoGrow = () => {
       input.style.height = "auto";
-      const newHeight = Math.min(input.scrollHeight, 160);
-      input.style.height = Math.max(newHeight, 38) + "px";
-      input.style.overflowY = input.scrollHeight > 160 ? "auto" : "hidden";
+      const newHeight = Math.min(input.scrollHeight, 120);
+      input.style.height = Math.max(newHeight, 24) + "px";
+      input.style.overflowY = input.scrollHeight > 120 ? "auto" : "hidden";
     };
     input.addEventListener("input", autoGrow);
   }
 
-  if (cancelBtn) {
-    cancelBtn.addEventListener("click", () => {
-      cancelHandler?.();
-    });
-  }
-
   // Suggestion chips (empty state) — clicking one submits the task.
-  // Activity rows are click-to-expand (only the clicked row expands).
+  // The "Working on:" line toggles its expandable detail panel.
   if (conversation) {
     conversation.addEventListener("click", (e) => {
       const chip = (e.target as HTMLElement).closest?.(
@@ -288,11 +305,17 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         submitText(chip.dataset.suggest);
         return;
       }
-      const row = (e.target as HTMLElement).closest?.(
-        ".rv-msg.rv-expandable"
+      const workingLine = (e.target as HTMLElement).closest?.(
+        "[data-working-toggle]"
       ) as HTMLElement | null;
-      if (row && !row.classList.contains("rv-user")) {
-        toggleActivityExpand(row);
+      if (workingLine) {
+        const block = workingLine.closest(".rv-processing") as HTMLElement | null;
+        if (block) {
+          const expanded = block.classList.toggle("rv-expanded");
+          workingLine.setAttribute("aria-expanded", expanded ? "true" : "false");
+          refreshWorkingDetail();
+        }
+        return;
       }
     });
   }
@@ -386,20 +409,44 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     dragHandle.addEventListener("pointercancel", endDrag);
   }
 
+  // ---- Conversation scrolling (top-grow behaviour) ----
+  //
+  // The conversation is top-anchored (CSS flex-start + a visible top
+  // gap): short conversations start near the top with breathing room
+  // and grow downward. Auto-scroll fires only when the user is already
+  // at (or near) the bottom, or when `force` is set — so new content
+  // never yanks the view if the user scrolled up to read.
+
+  function isNearBottom(): boolean {
+    if (!conversation) return true;
+    const threshold = 48;
+    return (
+      conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight <
+      threshold
+    );
+  }
+
+  function scrollConversationToBottom(force = false): void {
+    if (!conversation) return;
+    if (!force && !isNearBottom()) return;
+    conversation.scrollTop = conversation.scrollHeight;
+  }
+
   // ---- Live processing view ----
   //
-  // A compact, single-purpose block that appears immediately after
-  // the user sends a prompt. It shows the steps the agent has
-  // already completed, the current step, and an elapsed-time chip.
-  // The processing block is REPLACED by a polished summary card
-  // when the agent finishes.
+  // ONE compact collapsible line while the agent works:
+  //   [spinner] Working on: <short step>   2.1s   ▾
+  // Clicking the line expands a slim detail list (step timeline +
+  // privacy summary). Clicking again collapses it. The block is
+  // REPLACED by the compact summary card when the agent finishes.
 
   type Step = { key: string; label: string; done: boolean; active: boolean };
   let currentProcessing: {
     el: HTMLElement;
     stepsEl: HTMLElement | null;
-    currentEl: HTMLElement | null;
+    stepLabelEl: HTMLElement | null;
     elapsedEl: HTMLElement | null;
+    detailEl: HTMLElement | null;
     startedAt: number;
     steps: Step[];
     timer: ReturnType<typeof setInterval> | null;
@@ -412,6 +459,50 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     { key: "plan", label: "Agent planned", done: false, active: false },
     { key: "execute", label: "Action executed", done: false, active: false },
   ];
+
+  /** Short phrase shown after "Working on:" for each pipeline step. */
+  const STEP_PHRASES: Record<string, string> = {
+    perceive: "analyzing the page",
+    privacy: "protecting sensitive data",
+    context: "preparing sanitized context",
+    plan: "planning the next action",
+    execute: "executing actions",
+  };
+
+  function renderWorkingSteps(stepsEl: HTMLElement | null, steps: Step[]): void {
+    if (!stepsEl) return;
+    stepsEl.innerHTML = steps
+      .map(
+        (s) => `
+      <div class="rv-processing-step ${s.done ? "rv-done" : ""} ${s.active ? "rv-active" : ""}">
+        <span class="rv-step-icon">${s.done ? "✓" : s.active ? "◌" : "·"}</span>
+        <span>${escapeHtml(s.label)}</span>
+      </div>`
+      )
+      .join("");
+  }
+
+  function renderWorkingPrivacy(): string {
+    const s = lastRedactionSummary;
+    if (!s || !s.count) {
+      return `<div class="rv-working-privacy-row"><span class="rv-working-privacy-icon">🛡</span><span>No sensitive items detected yet</span></div>`;
+    }
+    const pills = Object.keys(s.byType)
+      .map(
+        (t) =>
+          `<span class="rv-redaction-pill" data-type="${escapeAttr(t)}"><span class="rv-redaction-icon">${iconForType(t)}</span><span class="rv-redaction-type">[${escapeHtml(t)}]</span><span class="rv-redaction-count">${s.byType[t]}</span></span>`
+      )
+      .join("");
+    return `<div class="rv-working-privacy-row"><span class="rv-working-privacy-icon">🛡</span><span>${s.count} sensitive value${s.count === 1 ? "" : "s"} protected locally</span></div><div class="rv-working-privacy-pills">${pills}</div>`;
+  }
+
+  function refreshWorkingDetail(): void {
+    if (!currentProcessing) return;
+    const cp = currentProcessing;
+    renderWorkingSteps(cp.stepsEl, cp.steps);
+    const privacyEl = cp.detailEl?.querySelector<HTMLElement>("[data-working-privacy]");
+    if (privacyEl) privacyEl.innerHTML = renderWorkingPrivacy();
+  }
 
   function startProcessing(): void {
     if (!conversation) return;
@@ -426,46 +517,34 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     const el = document.createElement("div");
     el.className = "rv-processing";
     el.innerHTML = `
-      <div class="rv-processing-header">
-        <div class="rv-processing-spinner"></div>
-        <span>Working on your request</span>
+      <button type="button" class="rv-working-line" data-working-toggle aria-expanded="false">
+        <span class="rv-processing-spinner"></span>
+        <span class="rv-working-text">Working on: <span class="rv-working-step" data-working-step>analyzing the page</span></span>
         <span class="rv-processing-elapsed">0.0s</span>
+        <span class="rv-working-chevron">▾</span>
+      </button>
+      <div class="rv-working-detail">
+        <div class="rv-processing-steps"></div>
+        <div class="rv-working-privacy" data-working-privacy></div>
       </div>
-      <div class="rv-processing-current" data-processing-current>Planning next step…</div>
-      <div class="rv-processing-steps"></div>
     `;
-    if (conversation) {
-      conversation.appendChild(el);
-    }
+    conversation.appendChild(el);
     const stepsEl = el.querySelector<HTMLElement>(".rv-processing-steps");
-    const currentEl = el.querySelector<HTMLElement>("[data-processing-current]");
+    const stepLabelEl = el.querySelector<HTMLElement>("[data-working-step]");
     const elapsedEl = el.querySelector<HTMLElement>(".rv-processing-elapsed");
+    const detailEl = el.querySelector<HTMLElement>(".rv-working-detail");
 
-    // Seed steps.
     const steps: Step[] = DEFAULT_STEPS.map((s) => ({ ...s }));
-    function renderSteps() {
-      if (!stepsEl) return;
-      stepsEl.innerHTML = steps
-        .map(
-          (s) => `
-        <div class="rv-processing-step ${s.done ? "rv-done" : ""} ${s.active ? "rv-active" : ""}">
-          <span class="rv-step-icon">${s.done ? "✓" : s.active ? "◌" : "·"}</span>
-          <span>${escapeHtml(s.label)}</span>
-        </div>`
-        )
-        .join("");
-    }
-    renderSteps();
+    currentProcessing = { el, stepsEl, stepLabelEl, elapsedEl, detailEl, startedAt, steps, timer: null };
+    refreshWorkingDetail();
 
     const timer = setInterval(() => {
       const s = ((Date.now() - startedAt) / 1000).toFixed(1);
-      if (elapsedEl) elapsedEl.textContent = `${s}s`;
+      if (currentProcessing?.elapsedEl) currentProcessing.elapsedEl.textContent = `${s}s`;
     }, 100);
+    if (currentProcessing) currentProcessing.timer = timer;
 
-    currentProcessing = { el, stepsEl, currentEl, elapsedEl, startedAt, steps, timer };
-    if (conversation) {
-      conversation.scrollTop = conversation.scrollHeight;
-    }
+    scrollConversationToBottom(true);
   }
 
   function updateProcessingStep(key: string, currentAction?: string): void {
@@ -481,32 +560,21 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       }
       return s.done ? s : { ...s, done: true, active: false };
     });
-    function render() {
-      if (!cp.stepsEl) return;
-      cp.stepsEl.innerHTML = cp.steps
-        .map(
-          (s) => `
-        <div class="rv-processing-step ${s.done ? "rv-done" : ""} ${s.active ? "rv-active" : ""}">
-          <span class="rv-step-icon">${s.done ? "✓" : s.active ? "◌" : "·"}</span>
-          <span>${escapeHtml(s.label)}</span>
-        </div>`
-        )
-        .join("");
+    renderWorkingSteps(cp.stepsEl, cp.steps);
+    if (cp.stepLabelEl) {
+      cp.stepLabelEl.textContent =
+        currentAction && currentAction.trim()
+          ? currentAction
+          : STEP_PHRASES[key] || "working";
     }
-    render();
-    if (currentAction && cp.currentEl) {
-      cp.currentEl.textContent = currentAction;
-    }
-    if (conversation) {
-      conversation.scrollTop = conversation.scrollHeight;
-    }
+    scrollConversationToBottom();
   }
 
   function endProcessing(_phase: string, _finalMessage: string): void {
     if (!currentProcessing) return;
     const cp = currentProcessing;
     if (cp.timer) clearInterval(cp.timer);
-    // Animate out: collapse to a single "done" line, then remove.
+    // Animate out: collapse, then remove.
     cp.el.style.transition = "opacity 0.18s ease, max-height 0.25s ease, margin 0.25s ease";
     cp.el.style.maxHeight = cp.el.offsetHeight + "px";
     requestAnimationFrame(() => {
@@ -572,7 +640,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   function renderActivity(activity: AgentActivity): void {
     recordActivity(activity);
 
-    // Update the live processing view (if active).
+    // Update the live working line (if active).
     if (currentProcessing) {
       const m = mapStageToProcessing(activity);
       if (m) {
@@ -581,10 +649,18 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     }
 
     // Thought activities (stage / llm_thinking) are intentionally
-    // NOT streamed as a raw timeline — they live in the live
-    // processing view. Final activities that signal an outcome
-    // are rendered into a compact hidden timeline for "View details".
-    if (activity.kind === "stage" || activity.kind === "llm_thinking") {
+    // NOT streamed as raw rows — they live inside the collapsible
+    // "Working on:" line. Action lifecycle events (planned/validated/
+    // executed) are recorded into the detail timeline, also visible
+    // by expanding the working line or the "Details" panel.
+    if (
+      activity.kind === "stage" ||
+      activity.kind === "llm_thinking" ||
+      activity.kind === "action_planned" ||
+      activity.kind === "action_validated" ||
+      activity.kind === "action_executed" ||
+      activity.kind === "iteration_complete"
+    ) {
       return;
     }
 
@@ -594,22 +670,11 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       return;
     }
 
-    // Stop the elapsed timer + in-progress state of the previous row.
-    if (conversation) {
-      const prevInProgress = conversation.querySelectorAll<HTMLElement>(".rv-in-progress");
-      prevInProgress.forEach((el) => {
-        el.classList.remove("rv-in-progress");
-        stopElapsedTimer(el);
-      });
-    }
-
-    // Render as a slim activity log row (click to expand details).
+    // User-facing events (missing_info, error, action_rejected, info)
+    // still render as slim message rows in the conversation.
     const block = document.createElement("div");
-    // Add rv-in-progress for action_planned (will be removed when validated/executed)
-    const inProgressClass = activity.kind === "action_planned" ? " rv-in-progress" : "";
-    block.className = `rv-msg rv-${activity.kind}${inProgressClass}`;
+    block.className = `rv-msg rv-${activity.kind} rv-slim`;
     block.dataset.id = activity.id;
-    block.classList.add("rv-expandable");
     block.innerHTML = `
       <div class="rv-msg-icon">${iconFor(activity.kind)}</div>
       <div class="rv-msg-main">
@@ -618,16 +683,12 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
             <span class="rv-msg-text">${escapeHtml(activity.text)}</span>
             ${activity.detail ? `<span class="rv-msg-detail">${escapeHtml(activity.detail)}</span>` : ""}
           </div>
-          <span class="rv-msg-elapsed"></span>
-          <span class="rv-msg-chevron">▾</span>
         </div>
-        <div class="rv-msg-expand"><div class="rv-msg-expand-inner">${buildActivityDetails(activity)}</div></div>
       </div>
     `;
     if (conversation) {
       conversation.appendChild(block);
-      conversation.scrollTop = conversation.scrollHeight;
-      if (inProgressClass) startElapsedTimer(block);
+      scrollConversationToBottom();
     }
   }
 
@@ -639,7 +700,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     block.className = "rv-msg rv-user";
     block.innerHTML = `<div class="rv-msg-bubble">${escapeHtml(text)}</div>`;
     conversation.appendChild(block);
-    conversation.scrollTop = conversation.scrollHeight;
+    scrollConversationToBottom(true);
   }
 
   // ---- Status & backend pill ----
@@ -685,8 +746,14 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
   }
 
   function setRedactionSummary(summary: RedactionSummary): void {
+    lastRedactionSummary = summary;
+    // Keep the collapsible working-line detail in sync while running.
+    if (currentProcessing) {
+      refreshWorkingDetail();
+    }
     if (!conversation || !root) return;
-    // Find the existing redaction card (if any) or create one.
+    // Compact single-line privacy status (full token table lives in
+    // the Details panel → "Sanitized data" tab).
     let card = root.querySelector<HTMLElement>(".rv-redaction-card");
     if (!card) {
       card = document.createElement("div");
@@ -701,29 +768,20 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
         const icon = iconForType(t);
         return `<span class="rv-redaction-pill" data-type="${escapeAttr(t)}">
                   <span class="rv-redaction-icon">${icon}</span>
-                  <span class="rv-redaction-type">[${escapeHtml(t)}_…]</span>
+                  <span class="rv-redaction-type">${escapeHtml(t)}</span>
                   <span class="rv-redaction-count">${count}</span>
                 </span>`;
       })
       .join("");
 
     card.innerHTML = `
-      <div class="rv-redaction-header">
-        <span class="rv-redaction-shield">🛡</span>
-        <span class="rv-redaction-title">Privacy firewall</span>
-        <span class="rv-redaction-state ${summary.inProgress ? "rv-busy" : "rv-idle"}">
-          ${summary.inProgress ? "Sanitizing…" : "Sanitized"}
-        </span>
-      </div>
-      <div class="rv-redaction-body">
-        <div class="rv-redaction-pills">${pills || '<span class="rv-redaction-empty">no sensitive values on this page</span>'}</div>
-        <div class="rv-redaction-foot">
-          <span class="rv-redaction-count-total">${summary.count} sensitive value${summary.count === 1 ? "" : "s"} protected locally</span>
-          <span class="rv-redaction-safety ${summary.count > 0 ? "rv-safe" : "rv-neutral"}">
-            ${summary.count > 0 ? "● Server payload: safe" : "○ Nothing to redact"}
-          </span>
-        </div>
-      </div>
+      <span class="rv-redaction-shield">🛡</span>
+      <span class="rv-redaction-count-total">${summary.count} protected</span>
+      <span class="rv-redaction-pills">${pills}</span>
+      <span class="rv-redaction-safety ${summary.count > 0 ? "rv-safe" : "rv-neutral"}">
+        ${summary.count > 0 ? "● safe" : "○ nothing to redact"}
+      </span>
+      ${summary.inProgress ? '<span class="rv-redaction-state rv-busy">Sanitizing…</span>' : ""}
     `;
 
     if (summary.inProgress) {
@@ -733,13 +791,83 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     }
   }
 
+  // Last summary data — used by the copy button.
+  let lastSummary: TaskSummary | null = null;
+
+  /** One-line stat string, e.g. "5 actions · 3.7s · 4 items protected". */
+  function summaryStatsLine(summary: TaskSummary): string {
+    const parts: string[] = [];
+    if (summary.actionsExecuted > 0) {
+      parts.push(
+        `${summary.actionsExecuted} action${summary.actionsExecuted === 1 ? "" : "s"}`
+      );
+    }
+    parts.push(`${(summary.durationMs / 1000).toFixed(1)}s`);
+    const privacyCount = summary.privacy?.count ?? 0;
+    parts.push(
+      privacyCount > 0
+        ? `${privacyCount} item${privacyCount === 1 ? "" : "s"} protected`
+        : "nothing to protect"
+    );
+    return parts.join(" · ");
+  }
+
+  /** Plain-text summary copied to the clipboard by the copy button. */
+  function summaryToText(summary: TaskSummary): string {
+    const header =
+      summary.phase === "completed"
+        ? "RedactVision Agent — Task completed"
+        : summary.phase === "offline"
+        ? "RedactVision Agent — Server agent offline"
+        : summary.phase === "cancelled"
+        ? "RedactVision Agent — Task cancelled"
+        : summary.phase === "max_iterations_reached"
+        ? "RedactVision Agent — Agent stopped"
+        : "RedactVision Agent — Task failed";
+    const lines = [header, summaryStatsLine(summary)];
+    if (summary.reason) lines.push(summary.reason);
+    const privacy = summary.privacy;
+    if (privacy && privacy.count > 0) {
+      const byType = Object.entries(privacy.byType)
+        .map(([t, n]) => `${t}: ${n}`)
+        .join(", ");
+      lines.push(`Privacy: ${privacy.count} sensitive value(s) tokenized locally (${byType}). Server never received raw PII.`);
+    } else {
+      lines.push("Privacy: no sensitive items on this page.");
+    }
+    return lines.join("\n");
+  }
+
+  async function copySummaryToClipboard(summary: TaskSummary): Promise<boolean> {
+    const text = summaryToText(summary);
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // Fallback for pages that block the async clipboard API.
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;opacity:0;pointer-events:none;";
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        return ok;
+      } catch {
+        return false;
+      }
+    }
+  }
+
   function showSummary(summary: TaskSummary): void {
     // Replace live processing (if still up) with the summary card.
     endProcessing(summary.phase, summary.message);
     // A fresh summary invalidates the previous details view.
     closeDetails();
+    lastSummary = summary;
 
-    // Build the summary card.
+    // Build the compact summary card.
     const isOk = summary.phase === "completed";
     const isFailed = summary.phase === "failed";
     const isCapped = summary.phase === "max_iterations_reached";
@@ -748,7 +876,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       ? "rv-summary-failed"
       : isCapped
       ? "rv-summary-capped"
-      : "";
+      : "rv-summary-ok";
     const iconChar = isOk ? "✓" : isFailed || isOffline ? "✕" : isCapped ? "!" : "·";
     const title = isOk
       ? "Task completed"
@@ -760,67 +888,28 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       ? "Agent stopped"
       : "Cancelled";
 
-    // Build a brief human-readable message.
-    let message: string;
-    if (isOk) {
-      message =
-        summary.actionsExecuted === 1
-          ? "Your request was completed in a single action."
-          : `Completed using ${summary.actionsExecuted} action${summary.actionsExecuted === 1 ? "" : "s"}.`;
-    } else if (isCapped) {
-      message = "The agent could not determine a successful completion within the safety limit.";
-    } else if (isOffline) {
-      message =
-        summary.reason ||
-        "The server-side LLM agent is currently unavailable. Check that the server is running and has at least one provider configured.";
-    } else if (isFailed) {
-      message = summary.reason || "The agent was unable to complete the task.";
-    } else {
-      message = "Cancelled by user.";
-    }
-
-    // Privacy count for the stats row.
-    const privacyCount = summary.privacy?.count ?? 0;
-    const privacyByType = summary.privacy?.byType ?? {};
-    const privacySummary = privacyCount > 0
-      ? `${privacyCount} sensitive item${privacyCount === 1 ? "" : "s"} protected locally`
-      : "No sensitive items on this page";
-
-    // Compose the stats chips.
-    const elapsed = (summary.durationMs / 1000).toFixed(1) + "s";
-    const stats: Array<{ icon: string; label: string; value: string }> = [];
-    if (summary.actionsExecuted > 0) {
-      stats.push({
-        icon: "⚡",
-        label: "actions",
-        value: String(summary.actionsExecuted),
-      });
-    }
-    stats.push({ icon: "⏱", label: "elapsed", value: elapsed });
-    stats.push({ icon: "🛡", label: "privacy", value: privacySummary });
-
-    const statsHtml = stats
-      .map(
-        (s) => `<span class="rv-summary-stat">
-                  <span class="rv-summary-stat-icon">${escapeHtml(s.icon)}</span>
-                  <span class="rv-summary-stat-label">${escapeHtml(s.label)}</span>
-                  <span>${escapeHtml(s.value)}</span>
-                </span>`
-      )
-      .join("");
+    // Single subtitle line with key stats (reason shown as a second
+    // muted line only when there is one — still compact).
+    const subtitle = summaryStatsLine(summary);
+    const reasonLine = summary.reason
+      ? `<div class="rv-summary-reason">${escapeHtml(summary.reason)}</div>`
+      : "";
 
     const card = document.createElement("div");
     card.className = `rv-summary ${variantClass}`;
     card.innerHTML = `
       <div class="rv-summary-head">
         <div class="rv-summary-icon">${iconChar}</div>
-        <div>
+        <div class="rv-summary-titles">
           <div class="rv-summary-title">${escapeHtml(title)}</div>
-          <div class="rv-summary-message">${escapeHtml(message)}</div>
+          <div class="rv-summary-sub">${escapeHtml(subtitle)}</div>
+          ${reasonLine}
+        </div>
+        <div class="rv-summary-tools">
+          <button type="button" class="rv-summary-copy" data-summary-copy title="Copy summary" aria-label="Copy summary">⧉</button>
+          <button type="button" class="rv-summary-toggle" data-summary-toggle title="Timeline &amp; sanitized data">Details</button>
         </div>
       </div>
-      <div class="rv-summary-stats">${statsHtml}</div>
-      <button type="button" class="rv-summary-toggle" data-summary-toggle>View details</button>
     `;
 
     // Insert the summary card right after the redaction card (if any)
@@ -834,7 +923,22 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       }
     }
 
-    // Wire the "View details" toggle to open the full-screen details
+    // Copy button — copies a plain-text summary of the result.
+    const copyBtn = card.querySelector<HTMLButtonElement>("[data-summary-copy]");
+    if (copyBtn) {
+      copyBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const ok = await copySummaryToClipboard(summary);
+        copyBtn.textContent = ok ? "✓" : "✕";
+        copyBtn.title = ok ? "Copied!" : "Copy failed";
+        setTimeout(() => {
+          copyBtn.textContent = "⧉";
+          copyBtn.title = "Copy summary";
+        }, 1400);
+      });
+    }
+
+    // Wire the "Details" toggle to open the full-screen details
     // panel (timeline + sanitized data) inside the card.
     const toggle = card.querySelector<HTMLButtonElement>("[data-summary-toggle]");
     summaryToggleBtn = toggle;
@@ -849,9 +953,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       });
     }
 
-    if (conversation) {
-      conversation.scrollTop = conversation.scrollHeight;
-    }
+    scrollConversationToBottom(true);
   }
 
   function showValidationError(error: ValidationError): void {
@@ -862,10 +964,10 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     card.className = "rv-summary rv-summary-validation";
     card.innerHTML = `
       <div class="rv-summary-head">
-        <div class="rv-summary-icon">⚠️</div>
-        <div>
-          <div class="rv-summary-title">Validation Error: ${escapeHtml(error.field)}</div>
-          <div class="rv-summary-message">${escapeHtml(error.issue)}</div>
+        <div class="rv-summary-icon">⚠</div>
+        <div class="rv-summary-titles">
+          <div class="rv-summary-title">Validation error: ${escapeHtml(error.field)}</div>
+          <div class="rv-summary-sub">${escapeHtml(error.issue)}</div>
         </div>
       </div>
       <div class="rv-validation-details">
@@ -880,7 +982,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       </div>
       <div class="rv-validation-actions">
         <button type="button" class="rv-validation-retry-btn" data-validation-retry>
-          ✏️ Fix & Try Again
+          Fix &amp; try again
         </button>
       </div>
     `;
@@ -905,9 +1007,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       });
     }
 
-    if (conversation) {
-      conversation.scrollTop = conversation.scrollHeight;
-    }
+    scrollConversationToBottom(true);
   }
 
   function showSystemError(error: SystemError): void {
@@ -917,17 +1017,17 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     const iconMap = {
       extension_context_invalidated: "🔄",
       server_unreachable: "🌐",
-      runtime_error: "⚠️",
+      runtime_error: "⚠",
     };
 
     const card = document.createElement("div");
     card.className = "rv-summary rv-summary-failed";
     card.innerHTML = `
       <div class="rv-summary-head">
-        <div class="rv-summary-icon">${iconMap[error.type] || "⚠️"}</div>
-        <div>
+        <div class="rv-summary-icon">${iconMap[error.type] || "⚠"}</div>
+        <div class="rv-summary-titles">
           <div class="rv-summary-title">${escapeHtml(error.title)}</div>
-          <div class="rv-summary-message">${escapeHtml(error.message)}</div>
+          <div class="rv-summary-sub">${escapeHtml(error.message)}</div>
         </div>
       </div>
       <div class="rv-validation-actions">
@@ -960,9 +1060,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
       });
     }
 
-    if (conversation) {
-      conversation.scrollTop = conversation.scrollHeight;
-    }
+    scrollConversationToBottom(true);
   }
 
   // ---- Details panel (Timeline + Sanitized data) ----
@@ -1029,6 +1127,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
                 <div class="rv-details-item-body">
                   <div class="rv-details-item-text">${escapeHtml(a.text)}</div>
                   ${a.detail ? `<div class="rv-details-item-detail">${escapeHtml(a.detail)}</div>` : ""}
+                  ${buildActivityMeta(a)}
                 </div>
                 <div class="rv-details-item-time">${time}</div>
               </div>
@@ -1149,9 +1248,10 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
 
   function setInputEnabled(enabled: boolean): void {
     if (input) input.disabled = !enabled;
-    if (sendBtn) sendBtn.disabled = !enabled;
-    // Cancel is active while the agent is working, disabled when idle.
-    if (cancelBtn) cancelBtn.disabled = enabled;
+    // The circular composer button flips between send (idle) and
+    // stop (working) modes — stop is wired to the same cancelHandler
+    // the old "Cancel" button used.
+    setSendMode(!enabled);
     if (enabled && input) input.focus();
   }
 
@@ -1268,6 +1368,7 @@ export function buildChatUI(container: HTMLElement): ChatUIHandles {
     closeDetails();
     summaryToggleBtn = null;
     detailedTimeline = [];
+    lastSummary = null;
     if (conversation) {
       conversation.innerHTML = emptyStateHTML();
     }
@@ -1364,21 +1465,20 @@ function chatHTML(): string {
       <main class="rv-conversation" id="rv-conversation">${emptyStateHTML()}</main>
 
       <footer class="rv-composer">
-        <div class="rv-input-wrap">
+        <div class="rv-input-pill" id="rv-input-pill">
+          <button class="rv-attach-btn" id="rv-attach-btn" type="button" title="Attachments coming soon" disabled>+</button>
           <textarea
             id="rv-input"
             class="rv-input"
             rows="1"
-            placeholder="Type a task…  (Enter to send)"
+            placeholder="Ask RedactVision anything…"
           ></textarea>
-          <div class="rv-composer-row">
-            <button class="rv-attach-btn" id="rv-attach-btn" type="button" title="Attachments coming soon" disabled>📎</button>
-            <button class="rv-cancel-btn" id="rv-cancel-btn" type="button" disabled>Cancel</button>
-            <button class="rv-send-btn" id="rv-send-btn" type="button" aria-label="Send">
-              <span class="rv-send-icon">➤</span>
-            </button>
-          </div>
+          <button class="rv-send-btn" id="rv-send-btn" type="button" aria-label="Send" title="Send">
+            <span class="rv-send-icon">↑</span>
+            <span class="rv-stop-icon">■</span>
+          </button>
         </div>
+        <div class="rv-disclaimer">Agent can make mistakes. Please double-check.</div>
       </footer>
 
       <footer class="rv-statusbar">
@@ -1440,50 +1540,17 @@ function emptyStateHTML(): string {
 }
 
 /**
- * Expand/collapse a single activity row. Only the clicked row is
- * toggled; the conversation scroll position is preserved so the
- * expansion never causes a visual jump.
+ * Expand/collapse is now handled by the collapsible "Working on:"
+ * line (see the [data-working-toggle] handler in buildChatUI).
  */
-function toggleActivityExpand(row: HTMLElement): void {
-  const conv = row.closest(".rv-conversation") as HTMLElement | null;
-  const scrollTop = conv?.scrollTop ?? 0;
-  const wasExpanded = row.classList.toggle("rv-expanded");
-  const chevron = row.querySelector<HTMLElement>(".rv-msg-chevron");
-  if (chevron) chevron.classList.toggle("rv-open", wasExpanded);
-  if (conv) conv.scrollTop = scrollTop;
-}
-
-/** Live elapsed timers for in-progress activity rows. */
-const activityTimers = new WeakMap<HTMLElement, number>();
-
-function startElapsedTimer(row: HTMLElement): void {
-  const span = row.querySelector<HTMLElement>(".rv-msg-elapsed");
-  if (!span) return;
-  const startedAt = Date.now();
-  const tick = () => {
-    span.textContent = `Working… ${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
-  };
-  tick();
-  activityTimers.set(row, window.setInterval(tick, 100));
-}
-
-function stopElapsedTimer(row: HTMLElement): void {
-  const timer = activityTimers.get(row);
-  if (timer !== undefined) {
-    clearInterval(timer);
-    activityTimers.delete(row);
-  }
-  const span = row.querySelector<HTMLElement>(".rv-msg-elapsed");
-  if (span) span.textContent = "";
-}
 
 /**
- * Build the expanded (factual) detail section for an activity row.
- * Only real telemetry from the agent pipeline is shown — no invented
- * reasoning. Sensitive values are never present here: the session
- * tokenizes them before any activity is emitted.
+ * Build the (factual) meta rows for a timeline item. Only real
+ * telemetry from the agent pipeline is shown — no invented reasoning.
+ * Sensitive values are never present here: the session tokenizes
+ * them before any activity is emitted.
  */
-function buildActivityDetails(activity: AgentActivity): string {
+function buildActivityMeta(activity: AgentActivity): string {
   const meta = (activity.meta || {}) as Record<string, unknown>;
   const rows: string[] = [];
   const add = (label: string, value: string, mono = false): void => {
@@ -1493,7 +1560,6 @@ function buildActivityDetails(activity: AgentActivity): string {
     );
   };
 
-  add("Intent", activity.text);
   if (activity.detail) add("Detail", activity.detail);
 
   const action = meta.action as Record<string, unknown> | undefined;
@@ -1512,7 +1578,6 @@ function buildActivityDetails(activity: AgentActivity): string {
   }
   if (typeof meta.errorCode === "string") add("Error code", meta.errorCode, true);
   if (typeof meta.failedAction === "string") add("Failed action", meta.failedAction, true);
-  if (rows.length === 1 && !activity.detail) add("Status", "Completed", true);
 
   return rows.join("");
 }
