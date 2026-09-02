@@ -42,7 +42,7 @@ import { planViaServer } from "./extension-bridge";
 export type PlannerBackend = "auto" | "server" | "on-device" | "local";
 
 export interface PlannerConfig {
-  /** Server LLM base URL. Default: http://127.0.0.1:8001 */
+  /** Server LLM base URL. Default: http://13.49.49.25:8001 */
   serverUrl?: string;
   /**
    * On-device model id (Transformers.js). Used by the privacy firewall
@@ -347,7 +347,7 @@ function trimElements(
 const STORAGE_KEY = "rv_agent_config";
 
 export const DEFAULT_PLANNER_CONFIG: PlannerConfig = {
-  serverUrl: "http://127.0.0.1:8001",
+  serverUrl: "http://13.49.49.25:8001",
   onDeviceModel: "onnx-community/Qwen2.5-0.5B-Instruct",
   backend: "server",
 };
