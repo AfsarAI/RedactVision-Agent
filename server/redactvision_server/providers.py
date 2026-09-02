@@ -159,6 +159,10 @@ class OmniRouteProvider(Provider):
         if key:
             headers["Authorization"] = f"Bearer {key}"
 
+        # Balanced timeout for OmniRoute multi-step reasoning
+        omni_timeout = float(os.environ.get("OMNIROUTE_TIMEOUT_SECONDS", "20.0"))
+        effective_timeout = min(timeout, omni_timeout)
+
         last_error = "OmniRoute all candidate auto-combos failed"
         for model in self.models():
             if _is_blacklisted("omniroute", model):
@@ -173,13 +177,15 @@ class OmniRouteProvider(Provider):
             }
 
             try:
-                with httpx.Client(timeout=timeout) as client:
+                with httpx.Client(timeout=effective_timeout) as client:
                     resp = client.post(self._url, json=payload, headers=headers)
-            except httpx.TimeoutException:
+            except (httpx.TimeoutException, httpx.ConnectTimeout):
                 last_error = _err(408, f"OmniRoute timeout for {model}")
                 continue
+            except (httpx.ConnectError, httpx.NetworkError) as exc:
+                # Local daemon is not reachable -> fail over immediately
+                return "", f"OmniRoute daemon unreachable on {self._url}: {exc}"
             except Exception as exc:
-                # If local daemon is not reachable on localhost:20128, fail gracefully to next provider
                 return "", f"OmniRoute network error ({model}): {exc}"
 
             if resp.status_code == 200:
@@ -357,10 +363,10 @@ class GroqProvider(Provider):
 
 # ------------------------------------------------------------------
 # Registry
-# Priority order: OmniRoute (Primary) -> OpenRouter (Secondary) -> Groq (Tertiary)
+# Priority order: Groq (Primary) -> OpenRouter (Secondary) -> OmniRoute (Tertiary)
 # ------------------------------------------------------------------
 PROVIDERS: list[Provider] = [
-    OmniRouteProvider(),
-    OpenRouterProvider(),
     GroqProvider(),
+    OpenRouterProvider(),
+    OmniRouteProvider(),
 ]

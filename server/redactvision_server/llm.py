@@ -158,7 +158,7 @@ def plan_with_llm(
         {"role": "user", "content": build_user_prompt(sanitized_event.prompt or "", sanitized_dom, history)},
     ]
 
-    logger.info("LLM request → OmniRoute (Auto Combos) → OpenRouter → Groq (bounded)")
+    logger.info("LLM request → Groq → OpenRouter → OmniRoute (bounded)")
 
     llm = _get_llm()
 
