@@ -1,126 +1,99 @@
-# RedactVision Agent Server
+# RedactVision Reasoning Server
 
-Phase 7: Secure Client/Server Transport
+FastAPI-powered privacy-preserving reasoning gateway for the RedactVision browser agent. It processes sanitized DOM contexts, generates structured browser actions via a bounded multi-provider LLM chain, and enforces strict privacy boundaries.
 
-## Quick Start
+---
 
-```bash
-cd server
+## 🚀 Quick Start
 
-# Using the project venv
-source ../.venv/bin/activate
-
-# Run the server
-uvicorn redactvision_server.main:app --reload --port 8001 --host 127.0.0.1
-```
-
-Or run directly:
+### 1. Install Dependencies
 
 ```bash
 cd server
-python -m redactvision_server.main
+pip install -e ".[dev]"
+# Or from repository root: pip install -r requirements.txt
 ```
 
-## Endpoints
+### 2. Configure Environment (`.env`)
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Health check |
-| `/health` | GET | Detailed health status |
-| `/privacy-status` | GET | Privacy contract documentation |
-| `/ws/agent` | WS | WebSocket for agent communication |
-| `/api/analyze` | POST | REST fallback for page analysis |
+Ensure API keys are set in `.env` at the project root:
 
-## Privacy Contract
+```env
+GROQ_API_KEY=gsk_...
+OPENROUTER_API_KEY=sk-or-v1-...
+OMNIROUTE_URL=http://localhost:20128/v1/chat/completions
+```
 
-### Server NEVER Receives
-- ❌ Local token map
-- ❌ Raw emails (rahul@gmail.com)
-- ❌ Raw phones (9876543210)
-- ❌ Raw passwords
-- ❌ Raw names
-- ❌ Credit card numbers
-- ❌ Any PII the client detected
-
-### Server Receives
-- ✅ Sanitized page URL
-- ✅ Page title
-- ✅ DOM elements with semantic tokens ([EMAIL_01], [PHONE_01], etc.)
-- ✅ User task prompt
-- ✅ Capture timestamp
-
-### Server Returns
-- ✅ Structured action (click/type/scroll/navigate/wait)
-- ✅ Target selector
-- ✅ Confidence score
-- ✅ Token references (for TYPE actions)
-
-## WebSocket Protocol
-
-1. Client connects to `/ws/agent`
-2. Server sends `{ "type": "status", "data": { "connected": true } }`
-3. Client sends sanitized event:
-   ```json
-   {
-     "url": "https://example.com/form",
-     "title": "Profile Form",
-     "elements": [
-       {
-         "tag": "input",
-         "id": "email",
-         "value": "[EMAIL_01]",
-         "selector": "#email"
-       }
-     ],
-     "prompt": "Fill the email field and submit",
-     "timestamp": 1234567890.123
-   }
-   ```
-4. Server validates privacy contract
-5. Server runs mock agent reasoning
-6. Server returns action:
-   ```json
-   {
-     "type": "action",
-     "data": {
-       "action": "type",
-       "target": "#email",
-       "confidence": 0.92,
-       "value": "[EMAIL_01]"
-     }
-   }
-   ```
-
-## Mock Agent
-
-The mock agent simulates reasoning over sanitized context:
-
-- Analyzes element selectors and semantic tokens
-- Matches user prompt keywords to action types
-- Returns structured actions based on DOM context
-
-Real implementation would use VLM/LLM for reasoning.
-
-## Testing
+### 3. Run the Server
 
 ```bash
-# Start server
-uvicorn redactvision_server.main:app --port 8001
+start-server
+# Or: uvicorn redactvision_server.main:app --reload --port 8001 --host 127.0.0.1
+```
 
-# In another terminal, test with curl
+---
+
+## 📡 Endpoints Reference
+
+| Endpoint                 | Method | Purpose                                                      | Input / Output Schema                              |
+| :----------------------- | :----: | :----------------------------------------------------------- | :------------------------------------------------- |
+| **`/health`**            | `GET`  | Health check & active connection status                      | Returns `{"status": "healthy", ...}`               |
+| **`/privacy-status`**    | `GET`  | Documents privacy guarantees and data boundary               | Returns allowable & forbidden payload specs        |
+| **`/llm/plan`**          | `POST` | Core single-step autonomous browser planning                 | `PlanRequest` → `PlanResponse`                     |
+| **`/llm/plan-smart`**    | `POST` | Think-Before-Acting multi-step planning with self-validation | `SmartPlanRequest` → `SmartPlanResponse`           |
+| **`/llm/validate-step`** | `POST` | Sub-second DOM state evaluation against expected criteria    | `StepValidationRequest` → `StepValidationResponse` |
+| **`/llm/visual-ground`** | `POST` | Multimodal VLM screenshot coordinate localization            | `VisualGroundRequest` → `VisualGroundResponse`     |
+| **`/llm/health`**        | `GET`  | LLM provider availability & model statuses                   | Returns active provider chain state                |
+| **`/ws/agent`**          |  `WS`  | Bidirectional WebSocket session stream                       | `SanitizedEvent` ↔ `ServerMessage`                 |
+
+---
+
+## 🔒 Privacy & Defense-in-Depth
+
+### Server Contract
+
+- **Never Receives**: Raw emails, phones, names, passwords, cards, or client-side token maps.
+- **Receives**: Sanitized URLs, titles, element metadata with semantic tokens (`[PERSON_01]`, `[EMAIL_01]`, `[PROFILE:name]`).
+- **Defense-in-Depth**: Automatically strips any remaining raw PII patterns before feeding reasoning prompts to LLM providers.
+- **Returns**: Strict JSON action objects (`click`, `type`, `scroll`, `select`, `wait`, `navigate`, `open_tab`, `done`).
+
+---
+
+## ⚡ Multi-Provider LLM Hierarchy
+
+```text
+1. Groq (PRIMARY) ──────► 2. OpenRouter (SECONDARY) ──────► 3. OmniRoute (TERTIARY FALLBACK)
+```
+
+- **Groq (Primary)**: Sub-second inference (~400–700ms) with `qwen/qwen3.8-27b`, `groq/compound-mini`, and `openai/gpt-oss-20b`.
+- **OpenRouter (Secondary)**: Free models fallback (`openrouter/free`, `google/gemma-4-31b-it:free`).
+- **OmniRoute (Tertiary)**: Local daemon auto-combos (`auto/smart`, `auto/fast`, `auto/coding`, `auto/offline`).
+- **Resilience**: 1.0s exponential backoff retry on HTTP 429 rate limits; bounded at max 6 HTTP attempts.
+
+---
+
+## 🧪 Testing
+
+```bash
+# Verify health
 curl http://127.0.0.1:8001/health
 
-# Test privacy status
-curl http://127.0.0.1:8001/privacy-status
-
-# Test REST endpoint
-curl -X POST http://127.0.0.1:8001/api/analyze \
+# Test primary planning endpoint
+curl -X POST http://127.0.0.1:8001/llm/plan \
   -H "Content-Type: application/json" \
   -d '{
     "url": "https://example.com",
-    "title": "Test Page",
-    "elements": [{"tag": "button", "id": "submit", "selector": "#submit"}],
-    "prompt": "Click submit",
-    "timestamp": 1234567890
+    "title": "Example Form",
+    "elements": [{"tag": "input", "id": "name", "label": "Full Name", "value": "[PERSON_01]", "selector": "#name"}],
+    "prompt": "Fill my name and submit",
+    "history": []
+  }'
+
+# Test smart planning endpoint
+curl -X POST http://127.0.0.1:8001/llm/plan-smart \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com",
+    "prompt": "Book ticket from Gorakhpur to Lucknow"
   }'
 ```
