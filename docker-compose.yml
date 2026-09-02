@@ -1,0 +1,25 @@
+services:
+  redactvision-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: redactvision-server:latest
+    container_name: redactvision-server
+    ports:
+      - "8001:8001"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8001
+      - ENVIRONMENT=production
+      - RELOAD=false
+      - CORS_ORIGINS=*
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health')\" || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

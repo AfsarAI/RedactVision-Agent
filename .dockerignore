@@ -1,0 +1,49 @@
+# =============================================================================
+# .dockerignore — RedactVision Agent
+# Exclude client-side assets, secret files, and local build artifacts
+# =============================================================================
+
+# Extension - runs locally in the browser, excluded from AWS deployment
+extension/
+
+# Local test site
+test-site/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Version control
+.git/
+.gitignore
+.github/
+
+# Environment secrets (NEVER bake secrets into Docker images)
+.env
+.env.*
+!.env.example
+
+# Python bytecode, caches, and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Documentation files not required in the container
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md
+SECURITY.md
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.hintrc

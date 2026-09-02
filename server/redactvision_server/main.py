@@ -38,9 +38,15 @@ try:
         logging.getLogger("redactvision_server").info(
             "Loaded environment from %s", _ENV_PATH
         )
-    else:
+    elif Path(".env").exists():
+        load_dotenv(Path(".env"), override=False)
         logging.getLogger("redactvision_server").info(
-            "No .env found at %s — relying on OS environment", _ENV_PATH
+            "Loaded environment from %s", Path(".env").resolve()
+        )
+    else:
+        load_dotenv(override=False)
+        logging.getLogger("redactvision_server").info(
+            "Relying on OS environment variables or default .env"
         )
 except ImportError:
     # python-dotenv not installed; fall back to OS env silently.
@@ -89,12 +95,19 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# CORS - restrict to localhost for development
+# CORS configuration: configurable via CORS_ORIGINS environment variable
+# Allows Chrome extension (chrome-extension://*) and external clients in production
+cors_origins_env = os.getenv("CORS_ORIGINS", "*")
+if cors_origins_env.strip() == "*":
+    cors_origins = ["*"]
+else:
+    cors_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:*", "chrome-extension://*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
@@ -513,7 +526,9 @@ async def global_exception_handler(request, exc):
 def _free_port(port: int = 8001) -> None:
     """Safely terminate any orphaned process holding the target port before starting."""
     import subprocess
-    import os
+    import shutil
+    if not shutil.which("lsof"):
+        return
     try:
         out = subprocess.check_output(["lsof", "-ti", f":{port}"], text=True, stderr=subprocess.DEVNULL).strip()
         if out:
@@ -529,12 +544,15 @@ def _free_port(port: int = 8001) -> None:
 def main():
     """Run the server."""
     import uvicorn
-    _free_port(8001)
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8001"))
+    reload = os.getenv("RELOAD", "false" if os.getenv("ENVIRONMENT") == "production" else "true").lower() in ("true", "1", "yes")
+    _free_port(port)
     uvicorn.run(
         "redactvision_server.main:app",
-        host="127.0.0.1",
-        port=8001,
-        reload=True,
+        host=host,
+        port=port,
+        reload=reload,
     )
 
 
