@@ -50,13 +50,13 @@ The RedactVision Agent is built around five core security invariants enforced at
 
 The Chrome Extension (Manifest V3) requests only the minimum set of permissions necessary for autonomous, privacy-preserving browser automation:
 
-| Permission | Purpose & Scope |
-| :--- | :--- |
-| **`activeTab`** | Grants temporary access to the active webpage for DOM extraction and in-page UI injection upon user invocation. |
-| **`tabs`** | Enables multi-tab subagent orchestration (`chrome.tabs.create`, `chrome.tabs.update`, `chrome.tabs.remove`) for fan-out tasks. |
-| **`scripting`** | Injects necessary helper utilities and styles for the in-page chat panel. |
-| **`storage`** | Stores encrypted AES-GCM profile vaults, local settings, and sanitized session history. |
-| **`debugger`** | Connects to Chrome DevTools Protocol (CDP) to dispatch authentic OS-level mouse and keyboard events (`Input.dispatchMouseEvent`, `Input.insertText`) to interact with rich interfaces like ChatGPT and Google Forms without executing arbitrary scripts. |
+| Permission      | Purpose & Scope                                                                                                                                                                                                                                          |
+| :-------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **`activeTab`** | Grants temporary access to the active webpage for DOM extraction and in-page UI injection upon user invocation.                                                                                                                                          |
+| **`tabs`**      | Enables multi-tab subagent orchestration (`chrome.tabs.create`, `chrome.tabs.update`, `chrome.tabs.remove`) for fan-out tasks.                                                                                                                           |
+| **`scripting`** | Injects necessary helper utilities and styles for the in-page chat panel.                                                                                                                                                                                |
+| **`storage`**   | Stores encrypted AES-GCM profile vaults, local settings, and sanitized session history.                                                                                                                                                                  |
+| **`debugger`**  | Connects to Chrome DevTools Protocol (CDP) to dispatch authentic OS-level mouse and keyboard events (`Input.dispatchMouseEvent`, `Input.insertText`) to interact with rich interfaces like ChatGPT and Google Forms without executing arbitrary scripts. |
 
 ---
 
@@ -64,10 +64,10 @@ The Chrome Extension (Manifest V3) requests only the minimum set of permissions 
 
 Security fixes and patches are applied to the active development branch (`main`):
 
-| Version | Supported | Status |
-| :--- | :---: | :--- |
-| **0.2.x** (Current) | ✅ | Actively supported (SIH 26171 Prototype) |
-| **0.1.x** | ❌ | Deprecated |
+| Version             | Supported | Status                                   |
+| :------------------ | :-------: | :--------------------------------------- |
+| **0.2.x** (Current) |    ✅     | Actively supported (SIH 26171 Prototype) |
+| **0.1.x**           |    ❌     | Deprecated                               |
 
 ---
 
