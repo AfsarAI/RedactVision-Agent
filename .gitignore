@@ -29,6 +29,7 @@ htmlcov/
 .nox/
 .cache/
 .hypothesis/
+server/tests/
 
 # Distribution / packaging
 build/
