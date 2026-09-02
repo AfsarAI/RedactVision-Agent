@@ -14,6 +14,7 @@
     "<all_urls>",
     "http://localhost:*/*",
     "http://127.0.0.1:*/*",
+    "http://13.49.49.25:*/*",
     "https://huggingface.co/*",
     "https://cdn-lfs.huggingface.co/*"
   ],

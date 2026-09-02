@@ -71,7 +71,7 @@ export async function captureViewport(): Promise<string | null> {
 export async function queryVisionModel(
   base64Image: string,
   targetDescription: string,
-  serverUrl = "http://127.0.0.1:8001"
+  serverUrl = "http://13.49.49.25:8001"
 ): Promise<NormalizedCoordinates> {
   try {
     if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
@@ -345,7 +345,7 @@ export function locateOCRSpatialCoordinates(
  */
 export async function handleFallbackVisualClick(
   targetDescription: string,
-  serverUrl = "http://127.0.0.1:8001"
+  serverUrl = "http://13.49.49.25:8001"
 ): Promise<boolean> {
   console.log(`[VisualGrounding] Initiating OCR spatial lookup for: "${targetDescription}"`);
   setCursorBadge(`Locating "${targetDescription.slice(0, 15)}" via OCR…`);
@@ -395,7 +395,7 @@ export async function handleFallbackVisualClick(
 export async function handleFallbackVisualType(
   targetDescription: string,
   text: string,
-  serverUrl = "http://127.0.0.1:8001"
+  serverUrl = "http://13.49.49.25:8001"
 ): Promise<boolean> {
   console.log(`[VisualGrounding] Initiating OCR spatial lookup for input: "${targetDescription}"`);
   setCursorBadge(`Locating field via OCR…`);
