@@ -1,107 +1,37 @@
-# RedactVision Agent - Dependency Requirements
-#
-# This project uses two separate dependency management systems:
-# 1. Node.js/npm for the Chrome Extension (Manifest V3)
-# 2. Python/pip for the FastAPI Server
-#
-# Install each separately as documented below.
+# =============================================================================
+# RedactVision Agent — Python Backend Dependencies
+# Install with: pip install -r requirements.txt (or cd server && pip install -e ".[dev]")
+# Requires: Python >= 3.10
+# =============================================================================
 
-================================================================================
-EXTENSION DEPENDENCIES (Node.js)
-================================================================================
+# Core Server Framework & Transport
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+
+# HTTP Client & LLM Provider Transport
+httpx>=0.27.0
+python-dotenv>=1.0.0
+
+# Server Development & Testing (Optional)
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+
+# Editable server package install
+-e ./server
+
+# =============================================================================
+# Extension Dependencies (Node.js / npm)
 # Location: extension/package.json
-# Install with: cd extension && npm install
-
-# Build Tools & TypeScript
-esbuild@^0.28.2          # Fast JavaScript/TypeScript bundler
-typescript@^7.0.2        # TypeScript compiler for type checking
-
-# Type Definitions
-@types/chrome@^0.2.7     # Chrome Extension API types
-
-# Optional Runtime Dependencies (loaded dynamically, not bundled)
-# These are marked as optionalDependencies in package.json
-# They are externalized at build time to reduce bundle size
-@huggingface/transformers@^3.0.0   # Transformers.js for on-device NLP/CV
-tesseract.js@^5.0.0                # Tesseract.js for OCR
-
-================================================================================
-SERVER DEPENDENCIES (Python)
-================================================================================
-# Location: server/pyproject.toml
-# Install with: cd server && pip install -e ".[dev]"
-
-# Core Runtime Dependencies
-fastapi>=0.115           # Modern, fast web framework for building APIs
-uvicorn[standard]>=0.30  # ASGI server with standard extras (websockets, etc.)
-python-multipart>=0.0.9  # Parse multipart/form-data requests
-httpx>=0.27              # Async HTTP client for provider calls
-python-dotenv>=1.0       # Load environment variables from .env file
-
-# Development Dependencies (optional, for testing)
-# Install with: cd server && pip install -e ".[dev]"
-pytest>=8.0              # Testing framework
-httpx>=0.27              # For async test client
-pytest-asyncio>=0.24     # Async support for pytest
-
-================================================================================
-ENVIRONMENT CONFIGURATION
-================================================================================
-# Copy .env.example to .env and add at least one provider key:
+# Install with: cd extension && npm install && npm run build
 #
-# GROQ_API_KEY=your_groq_key_here
-# OPENROUTER_API_KEY=your_openrouter_key_here
-# OMNIROUTE_URL=http://localhost:20128/v1/chat/completions
+# Build Tools:
+# - esbuild@^0.28.2
+# - typescript@^7.0.2
+# - @types/chrome@^0.2.7
 #
-# The server will automatically load .env from the project root.
-
-================================================================================
-BUILD & RUN COMMANDS
-================================================================================
-
-# Extension Build
-cd extension
-npm install          # Install dependencies
-npm run build        # Type-check + bundle (outputs to extension/dist/)
-npm run typecheck    # Type-check only (tsc --noEmit)
-
-# Server Run
-cd server
-pip install -e ".[dev]"   # Install runtime + dev dependencies
-start-server              # Or: python -m redactvision_server.main
-
-# Test Site (Controlled Test Page)
-cd test-site
-python3 -m http.server 8000   # Serves test form at http://localhost:8000/
-
-# Full System Run (3 terminals)
-# Terminal 1: Test site
-cd test-site && python3 -m http.server 8000
-
-# Terminal 2: Server
-cd server && start-server
-
-# Terminal 3: Build extension and load in Chrome
-cd extension && npm run build
-# Then: chrome://extensions/ → Load unpacked → select extension/ directory
-
-================================================================================
-PYTHON VERSION REQUIREMENT
-================================================================================
-# Python >= 3.10 (specified in pyproject.toml: requires-python = ">=3.10")
-
-================================================================================
-NODE.JS VERSION REQUIREMENT
-================================================================================
-# Any recent Node.js version that supports ES2022 and the tools above.
-# Tested with Node.js 18+, 20+, 22+.
-
-================================================================================
-KEY ARCHITECTURE NOTES
-================================================================================
-# 1. Extension source is in extension/src/ — NEVER edit extension/dist/ directly
-# 2. dist/ is gitignored and regenerated by npm run build
-# 3. Server reads .env from project root (2 levels up from main.py)
-# 4. Visual perception modules (OCR, CV, NER) exist but are NOT wired into
-#    the default pipeline — see README.md "Critical Implementation Gap"
-# 5. All secrets stay local; token map never crosses network boundary
+# Optional On-Device Perception:
+# - @huggingface/transformers@^3.0.0
+# - tesseract.js@^5.0.0
+# =============================================================================
