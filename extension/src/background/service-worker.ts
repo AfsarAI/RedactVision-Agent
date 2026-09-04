@@ -101,7 +101,7 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (message.type === "RV_VISUAL_GROUND") {
-      const serverUrl = String(message.serverUrl || "http://13.49.49.25:8001");
+      const serverUrl = String(message.serverUrl || "http://127.0.0.1:8001");
       const image = String(message.image || "");
       const targetDescription = String(message.targetDescription || "");
       void handleVisualGround(serverUrl, image, targetDescription).then(sendResponse);

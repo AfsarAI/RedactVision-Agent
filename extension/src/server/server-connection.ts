@@ -250,7 +250,7 @@ export function createServerConnection(
   serverUrl?: string
 ): ServerConnection {
   const config: ServerConfig = {
-    url: serverUrl || "ws://13.49.49.25:8001/ws/agent",
+    url: serverUrl || "ws://127.0.0.1:8001/ws/agent",
     reconnectAttempts: 3,
     reconnectDelay: 2000,
   };

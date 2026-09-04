@@ -240,7 +240,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   showWidgetToggle.checked = settings.showWidget;
   autoRedactToggle.checked = settings.autoRedact;
   serverUrlInput.value =
-    plannerConfig.serverUrl || "http://13.49.49.25:8001";
+    plannerConfig.serverUrl || "http://127.0.0.1:8001";
 
   // Theme
   document.querySelectorAll<HTMLInputElement>('input[name="rv-theme"]').forEach((r) => {
@@ -315,7 +315,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   async function persistPlanner(): Promise<void> {
     const cfg: PlannerConfig = {
-      serverUrl: serverUrlInput?.value.trim() || "http://13.49.49.25:8001",
+      serverUrl: serverUrlInput?.value.trim() || "http://127.0.0.1:8001",
       onDeviceModel: plannerConfig.onDeviceModel,
       backend: "server",
     };
@@ -383,7 +383,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     testResult.textContent = "";
     testResult.className = "rv-test-result";
     try {
-      const url = serverUrlInput.value.trim() || "http://13.49.49.25:8001";
+      const url = serverUrlInput.value.trim() || "http://127.0.0.1:8001";
       const result = await pingServer(url);
       if (result.ok) {
         const data = result.body as

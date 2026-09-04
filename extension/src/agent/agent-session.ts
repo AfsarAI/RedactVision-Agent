@@ -148,7 +148,7 @@ export class AgentSession {
     });
     this.llmPlanner = new LLMPlanner(
       plannerConfig || {
-        serverUrl: "http://13.49.49.25:8001",
+        serverUrl: "http://127.0.0.1:8001",
         onDeviceModel: "onnx-community/Qwen2.5-0.5B-Instruct",
       }
     );
