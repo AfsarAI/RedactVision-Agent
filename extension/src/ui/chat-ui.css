@@ -222,7 +222,7 @@
   flex-shrink: 0;
   overflow: hidden;
 }
-/* Brand logo inside the header avatar (SIH.jpeg). */
+/* Brand logo inside the header avatar. */
 .rv-chat-avatar .rv-avatar-img {
   width: 100%;
   height: 100%;

@@ -2,7 +2,7 @@
 
 > **Project:** RedactVision Agent  
 > **Team:** ByteForce  
-> **Problem Statement:** SIH26171 — On-device Visual Perception for Light-weight Browser Agents  
+> **Focus:** On-device Visual Perception for Light-weight Browser Agents  
 > **Organization:** Indian Space Research Organisation (ISRO)
 
 At RedactVision Agent, security and user privacy are fundamental architectural requirements, not afterthoughts. This document outlines our security model, threat mitigations, cryptographic guarantees, and responsible disclosure procedures.
@@ -64,10 +64,10 @@ The Chrome Extension (Manifest V3) requests only the minimum set of permissions 
 
 Security fixes and patches are applied to the active development branch (`main`):
 
-| Version             | Supported | Status                                   |
-| :------------------ | :-------: | :--------------------------------------- |
-| **0.2.x** (Current) |    ✅     | Actively supported (SIH 26171 Prototype) |
-| **0.1.x**           |    ❌     | Deprecated                               |
+| Version             | Supported | Status                         |
+| :------------------ | :-------: | :----------------------------- |
+| **0.2.x** (Current) |    ✅     | Actively supported (Prototype) |
+| **0.1.x**           |    ❌     | Deprecated                     |
 
 ---
 

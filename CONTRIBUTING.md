@@ -1,6 +1,6 @@
 # Contributing to RedactVision Agent
 
-> **SIH 26171 — On-device Visual Perception for Light-weight Browser Agents**  
+> **On-device Visual Perception for Light-weight Browser Agents**  
 > **Team:** ByteForce &nbsp;|&nbsp; **Organization:** Indian Space Research Organisation (ISRO)
 
 Thank you for your interest in contributing to **RedactVision Agent**! We welcome contributions from developers, researchers, and security specialists to help advance privacy-preserving autonomous browser automation.

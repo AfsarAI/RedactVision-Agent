@@ -31,7 +31,7 @@
 import type { AgentActivity } from "../agent/agent-session";
 
 /* ======================================================================
- * Brand logo (src/ui/SIH.jpeg → icons/logo.png)
+ * Brand logo (icons/logo.png)
  * Replaces the old "RV" text placeholder in the chat header avatar and
  * footer statusbar. Two hardening measures so the logo always renders:
  *   1. blob-URL upgrade — some host pages have a strict CSP that blocks

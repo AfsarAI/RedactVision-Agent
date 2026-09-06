@@ -1,6 +1,6 @@
 # RedactVision Agent
 
-> **SIH 26171 — On-device Visual Perception for Light-weight Browser Agents**  
+> **On-device Visual Perception for Light-weight Browser Agents**  
 > **Team:** ByteForce &nbsp;|&nbsp; **Organization:** Indian Space Research Organisation (ISRO) &nbsp;|&nbsp; **Category:** Software
 
 An on-device, privacy-preserving autonomous browser automation agent. RedactVision locally perceives webpage content, extracts visual/DOM structures, and dynamically redacts sensitive personal data (PII) before transmitting anonymized semantic tokens (`[PERSON_01]`, `[EMAIL_01]`, `[PROFILE:pan_card]`) to server-side reasoning models. Actions are planned via structured JSON, returned across the network boundary, and executed locally in the browser using Chrome DevTools Protocol (CDP) and simulated human cursor interactions.
@@ -452,7 +452,7 @@ Resolves spatial coordinates from screenshot images when DOM selectors fail.
 
 ---
 
-## 📋 Evaluation Criteria Alignment (SIH 26171)
+## 📋 Evaluation Criteria Alignment
 
 | Evaluation Metric                               | Weight  | RedactVision Implementation                                                                 |
 | :---------------------------------------------- | :-----: | :------------------------------------------------------------------------------------------ |
@@ -467,6 +467,6 @@ Resolves spatial coordinates from screenshot images when DOM selectors fail.
 ## 👥 Team ByteForce
 
 - **Lead & Development:** Team ByteForce
-- **Problem Statement:** SIH26171 — On-device Visual Perception for Light-weight Browser Agents
+- **Focus:** On-device Visual Perception for Light-weight Browser Agents
 - **Organization:** Indian Space Research Organisation (ISRO)
 - **License:** MIT
